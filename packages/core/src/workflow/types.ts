@@ -31,6 +31,8 @@ export interface WorkflowSuspensionMetadata<SUSPEND_DATA = DangerouslyAllowAny> 
     stepExecutionState?: DangerouslyAllowAny;
     /** Results from completed steps that need to be preserved */
     completedStepsData?: DangerouslyAllowAny[];
+    /** Shared workflow state snapshot */
+    workflowState?: WorkflowStateStore;
   };
 }
 
@@ -213,6 +215,12 @@ export interface WorkflowRetryConfig {
   delayMs?: number;
 }
 
+export type WorkflowStateStore = Record<string, unknown>;
+
+export type WorkflowStateUpdater =
+  | WorkflowStateStore
+  | ((previous: WorkflowStateStore) => WorkflowStateStore);
+
 export interface WorkflowRunOptions {
   /**
    * The active step, this can be used to track the current step in a workflow
@@ -236,6 +244,10 @@ export interface WorkflowRunOptions {
    * The user context, this can be used to track the current user context in a workflow
    */
   context?: UserContext;
+  /**
+   * Shared workflow state available to all steps
+   */
+  workflowState?: WorkflowStateStore;
   /**
    * Override Memory V2 for this specific execution
    * Takes priority over workflow config memory and global memory
@@ -290,6 +302,7 @@ export interface WorkflowResumeOptions {
   checkpoint?: {
     stepExecutionState?: DangerouslyAllowAny;
     completedStepsData?: DangerouslyAllowAny[];
+    workflowState?: WorkflowStateStore;
   };
   /**
    * The step index to resume from
@@ -723,18 +736,21 @@ export interface WorkflowStats {
 /**
  * Event emitted during workflow streaming
  */
+export type WorkflowStreamEventType =
+  | "workflow-start"
+  | "workflow-suspended"
+  | "workflow-complete"
+  | "workflow-cancelled"
+  | "workflow-error"
+  | "step-start"
+  | "step-complete"
+  | (string & {});
+
 export interface WorkflowStreamEvent {
   /**
    * Type of the event (e.g., "step-start", "step-complete", "custom", "agent-stream")
    */
-  type:
-    | "workflow-start"
-    | "workflow-suspended"
-    | "workflow-complete"
-    | "workflow-cancelled"
-    | "workflow-error"
-    | "step-start"
-    | "step-complete";
+  type: WorkflowStreamEventType;
   /**
    * Unique execution ID for this workflow run
    */
@@ -802,7 +818,9 @@ export interface WorkflowStreamWriter {
   /**
    * Write a custom event to the stream
    */
-  write(event: Partial<WorkflowStreamEvent> & { type: string }): void;
+  write(
+    event: Omit<Partial<WorkflowStreamEvent>, "type"> & { type: WorkflowStreamEventType },
+  ): void;
 
   /**
    * Pipe events from an agent's fullStream to the workflow stream
@@ -852,6 +870,7 @@ export interface CreateWorkflowExecutionOptions {
   userId?: string;
   conversationId?: string;
   context?: UserContext;
+  workflowState?: WorkflowStateStore;
   metadata?: Record<string, unknown>;
   executionId?: string;
 }

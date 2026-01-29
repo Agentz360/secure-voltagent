@@ -13,6 +13,11 @@ import type { SidebarsConfig } from "@docusaurus/plugin-content-docs";
 const sidebars: SidebarsConfig = {
   docs: [
     {
+      type: "doc",
+      id: "home",
+      label: "Home",
+    },
+    {
       type: "category",
       label: "Get Started",
       collapsed: true,
@@ -27,7 +32,7 @@ const sidebars: SidebarsConfig = {
           },
           items: ["getting-started/quick-start", "getting-started/manual-setup"],
         },
-        "getting-started/mcp-docs-server",
+        "getting-started/ai-assistants",
         {
           type: "link",
           label: "5-Step Tutorial",
@@ -38,6 +43,7 @@ const sidebars: SidebarsConfig = {
           },
         },
         "getting-started/providers-models",
+        "getting-started/model-router",
         "getting-started/comparison",
         "getting-started/migration-guide",
       ],
@@ -48,6 +54,11 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         "agents/overview",
+        {
+          type: "doc",
+          id: "agents/voltagent-instance",
+          label: "VoltAgent Instance",
+        },
         "agents/prompts",
         "agents/tools",
         {
@@ -80,9 +91,11 @@ const sidebars: SidebarsConfig = {
         },
         "agents/a2a/a2a-server",
         "agents/hooks",
+        "agents/middleware",
         "agents/message-types",
         "agents/multi-modal",
         "agents/providers",
+        "agents/retries-fallback",
         "agents/subagents",
         "agents/voice",
         "agents/context",
@@ -111,6 +124,7 @@ const sidebars: SidebarsConfig = {
         "workflows/overview",
         "workflows/suspend-resume",
         "workflows/execute-api",
+        "workflows/workflow-state",
         "workflows/streaming",
         "workflows/hooks",
         "workflows/schemas",
@@ -197,7 +211,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Tools",
       collapsed: true,
-      items: ["tools/overview", "tools/reasoning-tool"],
+      items: ["tools/overview", "tools/tool-routing", "tools/reasoning-tool"],
     },
     {
       type: "category",
@@ -248,7 +262,12 @@ const sidebars: SidebarsConfig = {
         {
           type: "category",
           label: "Endpoints",
-          items: ["api/endpoints/agents", "api/endpoints/workflows", "api/endpoints/tools"],
+          items: [
+            "api/endpoints/agents",
+            "api/endpoints/workflows",
+            "api/endpoints/memory",
+            "api/endpoints/tools",
+          ],
         },
       ],
     },

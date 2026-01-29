@@ -60,12 +60,11 @@ Now, let's enhance our workflow. We'll add an AI agent to analyze the sentiment 
 ```typescript
 import { VoltAgent, createWorkflowChain, Agent } from "@voltagent/core";
 import { z } from "zod";
-import { openai } from "@ai-sdk/openai";
 
 // Define an AI agent to use in our workflow
 const agent = new Agent({
   name: "Analyzer",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   instructions: "You are a text analyzer.",
 });
 
@@ -118,11 +117,10 @@ Finally, let's add a step that only runs if a condition is met. We'll check if t
 ```typescript
 import { VoltAgent, createWorkflowChain, Agent, andThen } from "@voltagent/core";
 import { z } from "zod";
-import { openai } from "@ai-sdk/openai";
 
 const agent = new Agent({
   name: "Analyzer",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   instructions: "You are a text analyzer.",
 });
 
@@ -484,6 +482,22 @@ If your guardrails rely on agent APIs or metadata, pass `guardrailAgent` in the 
 One of the most powerful features of VoltAgent is its built-in observability layer. Every workflow automatically records its execution history, a detailed trace of every step, its inputs, outputs, status, and timing. This history is crucial for debugging and can be visualized in real-time using the [**VoltOps Console**](https://console.voltagent.dev/).
 
 This execution history is stored using a **memory provider**. By default, VoltAgent uses `InMemoryStorage` for in-memory storage during development.
+
+To set a default memory provider for all workflows, configure `workflowMemory` (or the shared `memory` fallback) when creating `VoltAgent`.
+
+```ts
+import { Memory, VoltAgent } from "@voltagent/core";
+import { LibSQLMemoryAdapter } from "@voltagent/libsql";
+
+const workflowMemory = new Memory({
+  storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/workflows.db" }),
+});
+
+new VoltAgent({
+  workflowMemory,
+  workflows: { workflow },
+});
+```
 
 The `memory` property in the `createWorkflowChain` configuration allows you to **override this default storage mechanism**. This is useful when moving to production or if you want persistent storage.
 

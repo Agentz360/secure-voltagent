@@ -44,6 +44,8 @@ import type {
   WorkflowInput,
   WorkflowResult,
   WorkflowRunOptions,
+  WorkflowStateStore,
+  WorkflowStateUpdater,
   WorkflowStreamResult,
   WorkflowSuspensionMetadata,
 } from "./types";
@@ -646,14 +648,16 @@ export function createWorkflow<
   }: WorkflowConfig<INPUT_SCHEMA, RESULT_SCHEMA, SUSPEND_SCHEMA, RESUME_SCHEMA>,
   ...steps: ReadonlyArray<BaseStep>
 ) {
-  // ✅ Ensure every workflow has Memory V2 (like Agent system)
-  const effectiveMemory = workflowMemory || new MemoryV2({ storage: new InMemoryStorageAdapter() });
+  const hasExplicitMemory = workflowMemory !== undefined;
+  const globalWorkflowMemory = AgentRegistry.getInstance().getGlobalWorkflowMemory();
+  const fallbackMemory = new MemoryV2({ storage: new InMemoryStorageAdapter() });
+  let defaultMemory = workflowMemory ?? globalWorkflowMemory ?? fallbackMemory;
 
   // Helper function to save suspension state to memory
   const saveSuspensionState = async (
     suspensionData: any,
     executionId: string,
-    memory: typeof effectiveMemory,
+    memory: MemoryV2,
     logger: Logger,
     events: Array<{
       id: string;
@@ -668,11 +672,13 @@ export function createWorkflow<
       metadata?: Record<string, unknown>;
       context?: Record<string, unknown>;
     }>,
+    workflowState?: WorkflowStateStore,
   ): Promise<void> => {
     try {
       logger.trace(`Storing suspension checkpoint for execution ${executionId}`);
       await memory.updateWorkflowState(executionId, {
         status: "suspended",
+        workflowState,
         suspension: suspensionData
           ? {
               suspendedAt: suspensionData.suspendedAt,
@@ -730,6 +736,7 @@ export function createWorkflow<
     externalStreamController?: WorkflowStreamController | null,
   ): Promise<WorkflowExecutionResult<RESULT_SCHEMA, RESUME_SCHEMA>> => {
     const workflowRegistry = WorkflowRegistry.getInstance();
+    const executionMemory = options?.memory ?? defaultMemory;
 
     let executionId: string;
 
@@ -806,12 +813,13 @@ export function createWorkflow<
         : options?.context
           ? new Map(Object.entries(options.context))
           : new Map();
+    const workflowStateStore = options?.workflowState ?? {};
 
     // Get previous trace IDs if resuming
     let resumedFrom: { traceId: string; spanId: string } | undefined;
     if (options?.resumeFrom?.executionId) {
       try {
-        const workflowState = await effectiveMemory.getWorkflowState(executionId);
+        const workflowState = await executionMemory.getWorkflowState(executionId);
         // Look for trace IDs from the original execution
         if (workflowState?.metadata?.traceId && workflowState?.metadata?.spanId) {
           resumedFrom = {
@@ -883,11 +891,11 @@ export function createWorkflow<
 
         // Get the existing state and update its status
         try {
-          const workflowState = await effectiveMemory.getWorkflowState(executionId);
+          const workflowState = await executionMemory.getWorkflowState(executionId);
           if (workflowState) {
             runLogger.debug(`Found existing workflow state with status: ${workflowState.status}`);
             // Update state to running and clear suspension metadata
-            await effectiveMemory.updateWorkflowState(executionId, {
+            await executionMemory.updateWorkflowState(executionId, {
               status: "running",
               suspension: undefined, // Clear suspension metadata
               metadata: {
@@ -916,6 +924,7 @@ export function createWorkflow<
           status: "running" as const,
           input,
           context: options?.context ? Array.from(options.context.entries()) : undefined,
+          workflowState: workflowStateStore,
           metadata: {
             traceId: rootSpan.spanContext().traceId,
             spanId: rootSpan.spanContext().spanId,
@@ -925,7 +934,7 @@ export function createWorkflow<
         };
 
         try {
-          await effectiveMemory.setWorkflowState(executionId, workflowState);
+          await executionMemory.setWorkflowState(executionId, workflowState);
           runLogger.trace(`Created workflow state in Memory V2 for ${executionId}`);
         } catch (error) {
           runLogger.error("Failed to create workflow state in Memory V2:", { error });
@@ -949,13 +958,14 @@ export function createWorkflow<
         executionId: executionId,
         workflowName: name,
         context: contextMap, // Use the converted Map
+        workflowState: workflowStateStore,
         isActive: true,
         startTime: new Date(),
         currentStepIndex: 0,
         steps: [],
         signal: options?.suspendController?.signal, // Get signal from suspendController
         // Store effective memory for use in steps if needed
-        memory: effectiveMemory,
+        memory: executionMemory,
         // Initialize step data map for tracking inputs/outputs
         stepData: new Map(),
         // Initialize event sequence - restore from resume or start at 0
@@ -1025,11 +1035,13 @@ export function createWorkflow<
           ...options,
           executionId: executionId, // Use the resumed execution ID
           active: options.resumeFrom.resumeStepIndex,
+          workflowState: workflowStateStore,
         });
       } else {
         stateManager.start(input, {
           ...options,
           executionId: executionId, // Use the created execution ID
+          workflowState: workflowStateStore,
         });
       }
 
@@ -1042,6 +1054,12 @@ export function createWorkflow<
         stateManager.update({
           data: options.resumeFrom.checkpoint?.stepExecutionState,
         });
+        if (options.resumeFrom.checkpoint?.workflowState) {
+          stateManager.update({
+            workflowState: options.resumeFrom.checkpoint.workflowState,
+          });
+          executionContext.workflowState = options.resumeFrom.checkpoint.workflowState;
+        }
         // Store the resume input separately to pass to the step
         resumeInputData = options.resumeFrom.resumeData;
         // Update execution context for resume
@@ -1184,13 +1202,14 @@ export function createWorkflow<
             traceContext.end("cancelled");
 
             // Ensure spans are flushed (critical for serverless environments)
-            await observability.flushOnFinish();
+            await safeFlushOnFinish(observability);
 
             workflowRegistry.activeExecutions.delete(executionId);
 
             try {
-              await effectiveMemory.updateWorkflowState(executionId, {
+              await executionMemory.updateWorkflowState(executionId, {
                 status: "cancelled",
+                workflowState: stateManager.state.workflowState,
                 events: collectedEvents,
                 cancellation: {
                   cancelledAt: new Date(),
@@ -1319,6 +1338,7 @@ export function createWorkflow<
               completedStepsData: (steps as BaseStep[])
                 .slice(0, index)
                 .map((s, i) => ({ stepIndex: i, stepName: s.name || `Step ${i + 1}` })),
+              workflowState: stateManager.state.workflowState,
             };
 
             runLogger.debug(
@@ -1332,9 +1352,10 @@ export function createWorkflow<
               await saveSuspensionState(
                 suspensionData,
                 executionId,
-                effectiveMemory,
+                executionMemory,
                 runLogger,
                 collectedEvents,
+                stateManager.state.workflowState,
               );
             } catch (_) {
               // Error already logged in saveSuspensionState, don't throw
@@ -1355,7 +1376,7 @@ export function createWorkflow<
             traceContext.end("suspended");
 
             // Ensure spans are flushed (critical for serverless environments)
-            await observability.flushOnFinish();
+            await safeFlushOnFinish(observability);
 
             // Log workflow suspension with context
             runLogger.debug(
@@ -1480,6 +1501,7 @@ export function createWorkflow<
               {
                 stepExecutionState: stateManager.state.data,
                 completedStepsData: Array.from({ length: index }, (_, i) => i),
+                workflowState: stateManager.state.workflowState,
               },
               index, // Current step that was suspended
               executionContext.eventSequence, // Pass current event sequence
@@ -1529,16 +1551,17 @@ export function createWorkflow<
             traceContext.end("suspended");
 
             // Ensure spans are flushed (critical for serverless environments)
-            await observability.flushOnFinish();
+            await safeFlushOnFinish(observability);
 
             // Save suspension state to workflow's own Memory V2
             try {
               await saveSuspensionState(
                 suspensionMetadata,
                 executionId,
-                effectiveMemory,
+                executionMemory,
                 runLogger,
                 collectedEvents,
+                stateManager.state.workflowState,
               );
             } catch (_) {
               // Error already logged in saveSuspensionState, don't throw
@@ -1627,6 +1650,20 @@ export function createWorkflow<
                 isResumingThisStep ? resumeInputData : undefined,
                 retryCount,
               );
+              stepContext.setWorkflowState = (update: WorkflowStateUpdater) => {
+                const currentState = stateManager.state.workflowState;
+                const nextState = typeof update === "function" ? update(currentState) : update;
+                stepContext.state.workflowState = nextState;
+                const executionContextState = (
+                  executionContext as { state?: { workflowState?: typeof nextState } }
+                ).state;
+                if (executionContextState) {
+                  executionContextState.workflowState = nextState;
+                }
+                stateManager.update({ workflowState: nextState });
+                executionContext.workflowState = nextState;
+                stepContext.workflowState = nextState;
+              };
               // Execute step within span context with automatic signal checking for immediate suspension
               const result = await traceContext.withSpan(attemptSpan, async () => {
                 return await executeWithSignalCheck(
@@ -1812,12 +1849,13 @@ export function createWorkflow<
         traceContext.end("completed");
 
         // Ensure spans are flushed (critical for serverless environments)
-        await observability.flushOnFinish();
+        await safeFlushOnFinish(observability);
 
         // Update Memory V2 state to completed with events and output
         try {
-          await effectiveMemory.updateWorkflowState(executionContext.executionId, {
+          await executionMemory.updateWorkflowState(executionContext.executionId, {
             status: "completed",
+            workflowState: stateManager.state.workflowState,
             events: collectedEvents,
             output: finalState.result,
             updatedAt: new Date(),
@@ -1881,7 +1919,7 @@ export function createWorkflow<
           traceContext.end("cancelled");
 
           // Ensure spans are flushed (critical for serverless environments)
-          await observability.flushOnFinish();
+          await safeFlushOnFinish(observability);
 
           workflowRegistry.activeExecutions.delete(executionId);
 
@@ -1898,8 +1936,9 @@ export function createWorkflow<
           streamController?.close();
 
           try {
-            await effectiveMemory.updateWorkflowState(executionId, {
+            await executionMemory.updateWorkflowState(executionId, {
               status: "cancelled",
+              workflowState: stateManager.state.workflowState,
               metadata: {
                 ...(stateManager.state?.usage ? { usage: stateManager.state.usage } : {}),
                 cancellationReason,
@@ -1940,7 +1979,7 @@ export function createWorkflow<
           traceContext.end("suspended");
 
           // Ensure spans are flushed (critical for serverless environments)
-          await observability.flushOnFinish();
+          await safeFlushOnFinish(observability);
           if (stateManager.state.status === "suspended") {
             await runTerminalHooks("suspended", { includeEnd: false });
           }
@@ -1966,7 +2005,7 @@ export function createWorkflow<
         traceContext.end("error", error as Error);
 
         // Ensure spans are flushed (critical for serverless environments)
-        await observability.flushOnFinish();
+        await safeFlushOnFinish(observability);
 
         // Log workflow error with context
         runLogger.debug(
@@ -1993,8 +2032,9 @@ export function createWorkflow<
         }
         // Persist error status to Memory V2 so /state reflects the failure
         try {
-          await effectiveMemory.updateWorkflowState(executionId, {
+          await executionMemory.updateWorkflowState(executionId, {
             status: "error",
+            workflowState: stateManager.state.workflowState,
             events: collectedEvents,
             // Store a lightweight error summary in metadata for debugging
             metadata: {
@@ -2031,7 +2071,9 @@ export function createWorkflow<
     }); // Close the withSpan callback
   };
 
-  return {
+  const workflow: Workflow<INPUT_SCHEMA, RESULT_SCHEMA, SUSPEND_SCHEMA, RESUME_SCHEMA> & {
+    __setDefaultMemory?: (memory: MemoryV2) => void;
+  } = {
     id,
     name,
     purpose: purpose ?? "No purpose provided",
@@ -2041,7 +2083,7 @@ export function createWorkflow<
     suspendSchema: effectiveSuspendSchema as SUSPEND_SCHEMA,
     resumeSchema: effectiveResumeSchema as RESUME_SCHEMA,
     // ✅ Always expose memory for registry access
-    memory: effectiveMemory,
+    memory: defaultMemory,
     observability: workflowObservability,
     inputGuardrails: workflowInputGuardrails,
     outputGuardrails: workflowOutputGuardrails,
@@ -2265,7 +2307,19 @@ export function createWorkflow<
 
       return streamResult;
     },
-  } satisfies Workflow<INPUT_SCHEMA, RESULT_SCHEMA, SUSPEND_SCHEMA, RESUME_SCHEMA>;
+  };
+
+  const setDefaultMemory = (memory: MemoryV2): void => {
+    if (hasExplicitMemory) {
+      return;
+    }
+    defaultMemory = memory;
+    workflow.memory = memory;
+  };
+
+  workflow.__setDefaultMemory = setDefaultMemory;
+
+  return workflow;
 }
 
 /*
@@ -2404,6 +2458,14 @@ async function executeWithSignalCheck<T>(
 
   // Race between the actual function and abort signal
   return Promise.race([fn(), abortPromise]);
+}
+
+async function safeFlushOnFinish(observability: VoltAgentObservability): Promise<void> {
+  try {
+    await observability.flushOnFinish();
+  } catch {
+    // Swallow flush errors to avoid failing the workflow.
+  }
 }
 
 /**

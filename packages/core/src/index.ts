@@ -25,7 +25,14 @@ export type {
 export type {
   Workflow,
   WorkflowConfig,
+  WorkflowHookContext,
+  WorkflowHookStatus,
+  WorkflowHooks,
   WorkflowStats,
+  WorkflowStateStore,
+  WorkflowStateUpdater,
+  WorkflowStepData,
+  WorkflowStepStatus,
   WorkflowTimelineEvent,
   RegisteredWorkflow,
 } from "./workflow";
@@ -76,10 +83,15 @@ export {
   createDefaultSafetyGuardrails,
 } from "./agent/guardrails/defaults";
 export { createInputGuardrail, createOutputGuardrail } from "./agent/guardrail";
+export { createInputMiddleware, createOutputMiddleware } from "./agent/middleware";
 export type {
   CreateInputGuardrailOptions,
   CreateOutputGuardrailOptions,
 } from "./agent/guardrail";
+export type {
+  CreateInputMiddlewareOptions,
+  CreateOutputMiddlewareOptions,
+} from "./agent/middleware";
 
 // Observability exports
 export { VoltAgentObservability } from "./observability";
@@ -137,16 +149,37 @@ export {
 export { InMemoryStorageAdapter } from "./memory/adapters/storage/in-memory";
 export { InMemoryVectorAdapter } from "./memory/adapters/vector/in-memory";
 export { AiSdkEmbeddingAdapter } from "./memory/adapters/embedding/ai-sdk";
+export type { EmbeddingModelReference } from "./memory/adapters/embedding/types";
 export type {
   WorkingMemoryScope,
   WorkingMemoryConfig,
 } from "./memory/types";
 
 export * from "./agent/providers";
+export {
+  ModelProviderRegistry,
+  type EmbeddingModelFactory,
+  type LanguageModelFactory,
+  type ModelProvider,
+  type ModelProviderEntry,
+  type ModelProviderLoader,
+} from "./registries/model-provider-registry";
+export type {
+  ModelForProvider,
+  ModelRouterModelId,
+  ProviderId,
+  ProviderModelsMap,
+} from "./registries/model-provider-types.generated";
+export type { EmbeddingRouterModelId } from "./registries/embedding-model-router-types";
 export * from "./events/types";
 export type {
   AgentOptions,
   AgentSummarizationOptions,
+  AgentModelReference,
+  AgentModelConfig,
+  AgentModelValue,
+  AgentFeedbackOptions,
+  AgentFeedbackMetadata,
   AgentResponse,
   AgentFullState,
   ApiToolInfo,
@@ -167,6 +200,9 @@ export type {
   AgentEvalScorerFactory,
   AgentEvalScorerReference,
   AgentEvalResult,
+  AgentEvalResultCallbackArgs,
+  AgentEvalFeedbackHelper,
+  AgentEvalFeedbackSaveInput,
   AgentEvalSamplingPolicy,
   AgentEvalOperationType,
   AgentEvalPayload,
@@ -182,10 +218,25 @@ export type {
   InputGuardrailResult,
   OutputGuardrailArgs,
   OutputGuardrailResult,
+  InputMiddleware,
+  OutputMiddleware,
+  InputMiddlewareArgs,
+  OutputMiddlewareArgs,
+  InputMiddlewareResult,
+  OutputMiddlewareResult,
+  MiddlewareFunction,
+  MiddlewareDefinition,
+  MiddlewareDirection,
+  MiddlewareContext,
 } from "./agent/types";
-export type { VoltAgentError, AbortError } from "./agent/errors";
+export type {
+  VoltAgentError,
+  AbortError,
+  MiddlewareAbortError,
+  MiddlewareAbortOptions,
+} from "./agent/errors";
 export { ToolDeniedError, ClientHTTPError } from "./agent/errors";
-export { isAbortError, isVoltAgentError } from "./agent/errors";
+export { isAbortError, isMiddlewareAbortError, isVoltAgentError } from "./agent/errors";
 export type { AgentHooks } from "./agent/hooks";
 export * from "./types";
 export * from "./utils";
@@ -252,6 +303,7 @@ export type {
   ManagedMemoryAddMessagesInput,
   ManagedMemoryGetMessagesInput,
   ManagedMemoryClearMessagesInput,
+  ManagedMemoryDeleteMessagesInput,
   ManagedMemoryUpdateConversationInput,
   ManagedMemoryWorkingMemoryInput,
   ManagedMemorySetWorkingMemoryInput,

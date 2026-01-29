@@ -139,6 +139,18 @@ const config: Config = {
         sidebarCollapsed: false,
       },
     ],
+    // Models docs
+    [
+      "@docusaurus/plugin-content-docs",
+      {
+        id: "models",
+        path: "models-docs",
+        routeBasePath: "models-docs",
+        sidebarPath: "./sidebarsModels.ts",
+        breadcrumbs: false,
+        sidebarCollapsed: false,
+      },
+    ],
     // VoltAgent Recipes & Guides - Separate docs instance
     [
       "@docusaurus/plugin-content-docs",
@@ -492,6 +504,18 @@ const config: Config = {
             to: "/docs/getting-started/providers-models/",
             from: "/docs/providers/contributing/",
           },
+          {
+            to: "/docs/agents/voltagent-instance/",
+            from: "/docs/getting-started/voltagent-instance/",
+          },
+          {
+            to: "/models-docs/",
+            from: "/docs/models/",
+          },
+          {
+            to: "/models-docs/providers/overview",
+            from: "/docs/models/providers/",
+          },
           // Redirect old /examples/ paths to /recipes-and-guides/
           {
             to: "/recipes-and-guides/",
@@ -520,6 +544,14 @@ const config: Config = {
           {
             to: "/recipes-and-guides/chatgpt-app/",
             from: "/examples/agents/chatgpt-app/",
+          },
+          {
+            to: "/docs/ai-assistants/",
+            from: "/docs/getting-started/mcp-docs-server/",
+          },
+          {
+            to: "/docs/ai-assistants/",
+            from: "/docs/skills/",
           },
         ],
       },
@@ -601,6 +633,11 @@ const config: Config = {
         {
           to: "/docs",
           label: "Documentation",
+          position: "left",
+        },
+        {
+          to: "/models-docs",
+          label: "Models",
           position: "left",
         },
         {

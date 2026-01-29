@@ -58,11 +58,10 @@ const content: MessageContent = [
 
 ```typescript
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
 
 // Using MessageContent in direct AI SDK calls
 const result = await generateText({
-  model: openai("gpt-4"),
+  model: "openai/gpt-4",
   messages: [
     {
       role: "user",
@@ -150,6 +149,22 @@ conversationHistory.forEach((msg) => {
   console.log(`[${msg.id}] ${msg.role}:`, msg.parts);
 });
 ```
+
+#### Feedback metadata
+
+When feedback is enabled, VoltAgent attaches feedback metadata to assistant UI messages under `message.metadata.feedback`. This is how UIs can show thumbs up/down and submit feedback later.
+
+```ts
+const feedback = message.metadata?.feedback as
+  | { traceId?: string; key?: string; url?: string }
+  | undefined;
+
+if (feedback?.url) {
+  console.log("Submit feedback to:", feedback.url);
+}
+```
+
+See [Feedback](/observability-docs/feedback) for the full flow and API examples.
 
 ### 3. VoltAgentTextStreamPart (Streaming Extension)
 

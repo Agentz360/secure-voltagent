@@ -7,6 +7,7 @@ What you’ll find here
 - RAG and retrieval over vectors and databases
 - Typed tool design, MCP servers, and external APIs
 - Working and persistent memory for grounded conversations
+- Resumable streaming examples for reconnecting to in-flight responses
 - Supervisor + sub‑agent orchestration and workflows
 - Deployments for Next.js, Cloudflare Workers, Netlify and more
 
@@ -82,6 +83,8 @@ Create a multi-agent research workflow where different AI agents collaborate to 
 ## All Examples
 
 - [Base Starter](./base) — Minimal VoltAgent starter with a single agent, memory, and dev server.
+- [Retries and Fallbacks](./with-retries-fallback) — Model fallback list with per-model retries and agent-level defaults.
+- [Middleware](./with-middleware) — Input/output middleware with retry feedback.
 - [PlanAgents](./with-planagents) — Quickstart for PlanAgents with planning, filesystem tools, and subagent tasks.
 - [Slack](./with-slack) — Slack app mention bot that replies in the same channel/thread via VoltOps Slack actions.
 - [Airtable](./with-airtable) — React to new Airtable records and write updates back using VoltOps Airtable actions.
@@ -89,7 +92,7 @@ Create a multi-agent research workflow where different AI agents collaborate to 
 - [GitHub Star Stories](./github-star-stories) — Celebrate new GitHub stars with enriched profiles, AI-written stories, and VoltOps Discord actions.
 - [SDK Trace Example](./sdk-trace-example) — OpenTelemetry tracing wired to VoltOps so you can inspect spans and events.
 - [Agent‑to‑Agent Server](./with-a2a-server) — Expose agents over HTTP so other agents/services can call them.
-- [Amazon Bedrock](./with-amazon-bedrock) — Run AWS Bedrock models by configuring credentials and providers in VoltAgent.
+- [Amazon Bedrock](./with-amazon-bedrock) — Run AWS Bedrock models by configuring credentials and model IDs in VoltAgent.
 - [Anthropic](./with-anthropic) — Use Claude models as your agent’s LLM via the AI SDK.
 - [Chroma](./with-chroma) — RAG with Chroma vectors showing automatic vs tool‑driven retrieval patterns.
 - [Client‑side Tools](./with-client-side-tools) — Next.js UI triggers typed client‑side tools safely, VoltAgent on the server.
@@ -107,6 +110,7 @@ Create a multi-agent research workflow where different AI agents collaborate to 
 - [Hugging Face (MCP)](./with-hugging-face-mcp) — Access HF tools and models through MCP from agents.
 - [JWT Auth](./with-jwt-auth) — Protect agent endpoints with JWT verification and helpers.
 - [Langfuse](./with-langfuse) — Send traces and metrics to Langfuse for observability.
+- [Feedback Templates](./with-feedback) — Configure per-agent feedback templates for thumbs, numeric, and categorical feedback.
 - [Live Evals](./with-live-evals) — Run online evaluations against prompts/agents during development.
 - [MCP Basics](./with-mcp) — Connect to MCP servers and call tools from an agent.
 - [MCP Elicitation](./with-mcp-elicitation) — Handle `elicitation/create` requests from MCP tools with per-request handlers.
@@ -128,6 +132,7 @@ Create a multi-agent research workflow where different AI agents collaborate to 
 - [Supabase](./with-supabase) — Use Supabase auth/database in tools and server endpoints.
 - [Tavily Search](./with-tavily-search) — Augment answers with web results from Tavily.
 - [Thinking Tool](./with-thinking-tool) — Structured reasoning via a dedicated “thinking” tool and schema.
+- [Tool Routing](./with-tool-routing) — Route large tool pools through a small set of router tools.
 - [Tools](./with-tools) — Author Zod‑typed tools with cancellation and streaming support.
 - [VoltOps Actions + Airtable](./with-voltagent-actions) — Call VoltOps Actions as tools to create and list Airtable records.
 - [Turso](./with-turso) — Persist memory on LibSQL/Turso with simple setup.

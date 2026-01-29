@@ -50,7 +50,6 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ## Configuration (Workers)
 
 ```ts
-import { openai } from "@ai-sdk/openai";
 import { Agent, Memory, VoltAgent } from "@voltagent/core";
 import { D1MemoryAdapter } from "@voltagent/cloudflare-d1";
 import { serverlessHono } from "@voltagent/serverless-hono";
@@ -73,7 +72,7 @@ const createWorker = (env: Env) => {
 
   const agent = new Agent({
     name: "Assistant",
-    model: openai("gpt-4o-mini"),
+    model: "openai/gpt-4o-mini",
     tools: [weatherTool],
     memory,
   });
@@ -151,7 +150,7 @@ See [Working Memory](./working-memory.md) for configuration details.
 
 ### Semantic Search (Optional)
 
-D1 provides storage only. To enable semantic search, pair it with an embedding + vector adapter (for example, `AiSdkEmbeddingAdapter` and `InMemoryVectorAdapter`).
+D1 provides storage only. To enable semantic search, pair it with an embedding model string (for example, `openai/text-embedding-3-small`) and a vector adapter such as `InMemoryVectorAdapter`.
 
 See [Semantic Search](./semantic-search.md) for usage.
 

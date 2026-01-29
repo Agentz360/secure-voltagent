@@ -3,12 +3,11 @@
   "description": "Example showing how to access VoltAgent memory via REST API with PostgreSQL storage",
   "version": "1.0.0",
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.0",
-    "@voltagent/cli": "^0.1.20",
-    "@voltagent/core": "^2.0.9",
+    "@voltagent/cli": "^0.1.21",
+    "@voltagent/core": "^2.3.1",
     "@voltagent/logger": "^2.0.2",
-    "@voltagent/postgres": "^2.0.2",
-    "@voltagent/server-hono": "^2.0.3"
+    "@voltagent/postgres": "^2.0.3",
+    "@voltagent/server-hono": "^2.0.4"
   },
   "devDependencies": {
     "@types/node": "^24.2.1",

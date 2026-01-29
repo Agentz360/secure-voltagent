@@ -1,5 +1,11 @@
 # @voltagent/postgres
 
+## 2.0.3
+
+### Patch Changes
+
+- [`b0fae14`](https://github.com/VoltAgent/voltagent/commit/b0fae149569a65439ce5f6e7f8039be6b97086e1) Thanks [@omeraplak](https://github.com/omeraplak)! - chore: bump version
+
 ## 2.0.2
 
 ### Patch Changes
@@ -366,7 +372,7 @@
   ## New: PostgresVectorAdapter
 
   ```typescript
-  import { Agent, Memory, AiSdkEmbeddingAdapter } from "@voltagent/core";
+  import { Agent, Memory } from "@voltagent/core";
   import { PostgresMemoryAdapter, PostgresVectorAdapter } from "@voltagent/postgres";
   import { openai } from "@ai-sdk/openai";
 
@@ -374,7 +380,7 @@
     storage: new PostgresMemoryAdapter({
       connectionString: process.env.DATABASE_URL,
     }),
-    embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+    embedding: "openai/text-embedding-3-small",
     vector: new PostgresVectorAdapter({
       connectionString: process.env.DATABASE_URL,
     }),

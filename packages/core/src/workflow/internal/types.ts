@@ -4,9 +4,13 @@ import type { UIMessage } from "ai";
 import type * as TF from "type-fest";
 import type { z } from "zod";
 import type { BaseMessage } from "../../agent/providers";
-import type { WorkflowExecutionContext } from "../context";
-import type { WorkflowStepData, WorkflowStreamWriter } from "../types";
-import type { WorkflowState } from "./state";
+import type {
+  WorkflowStateStore,
+  WorkflowStateUpdater,
+  WorkflowStepData,
+  WorkflowStepState,
+  WorkflowStreamWriter,
+} from "../types";
 
 /**
  * The base input type for the workflow
@@ -21,30 +25,18 @@ export type InternalBaseWorkflowInputSchema =
   | string;
 
 /**
- * The state parameter for the workflow, used to pass the state to a step or other function (i.e. hooks)
- * @private - INTERNAL USE ONLY
- */
-export type InternalWorkflowStateParam<INPUT> = Omit<
-  WorkflowState<INPUT, DangerouslyAllowAny>,
-  "data" | "result"
-> & {
-  /** Workflow execution context for event tracking */
-  workflowContext?: WorkflowExecutionContext;
-  /** AbortSignal for checking suspension during step execution */
-  signal?: AbortSignal;
-};
-
-/**
  * Context object for new execute API with helper functions
  * @private - INTERNAL USE ONLY
  */
 export interface WorkflowExecuteContext<INPUT, DATA, SUSPEND_DATA, RESUME_DATA> {
   data: DATA;
-  state: InternalWorkflowStateParam<INPUT>;
+  state: WorkflowStepState<INPUT>;
   getStepData: (stepId: string) => WorkflowStepData | undefined;
   suspend: (reason?: string, suspendData?: SUSPEND_DATA) => Promise<never>;
   resumeData?: RESUME_DATA;
   retryCount?: number;
+  workflowState: WorkflowStateStore;
+  setWorkflowState: (update: WorkflowStateUpdater) => void;
   /**
    * Logger instance for this workflow execution.
    * Provides execution-scoped logging with full context (userId, conversationId, executionId).

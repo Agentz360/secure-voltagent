@@ -1,5 +1,11 @@
 # @voltagent/voltagent-memory
 
+## 1.0.3
+
+### Patch Changes
+
+- [`b0fae14`](https://github.com/VoltAgent/voltagent/commit/b0fae149569a65439ce5f6e7f8039be6b97086e1) Thanks [@omeraplak](https://github.com/omeraplak)! - chore: bump version
+
 ## 1.0.2
 
 ### Patch Changes
@@ -222,14 +228,13 @@
 
   ```typescript
   import { ManagedMemoryAdapter, ManagedMemoryVectorAdapter } from "@voltagent/voltagent-memory";
-  import { AiSdkEmbeddingAdapter, Memory } from "@voltagent/core";
-  import { openai } from "@ai-sdk/openai";
+  import { Memory } from "@voltagent/core";
 
   const memory = new Memory({
     storage: new ManagedMemoryAdapter({
       databaseName: "production-memory",
     }),
-    embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+    embedding: "openai/text-embedding-3-small",
     vector: new ManagedMemoryVectorAdapter({
       databaseName: "production-memory",
     }),
