@@ -325,6 +325,7 @@ export class PostgreSQLMemoryAdapter implements StorageAdapter {
       await client.query("BEGIN");
 
       const messagesTable = this.getTableName(`${this.tablePrefix}_messages`);
+      const messageId = message.id || this.generateId();
 
       // Ensure conversation exists
       const conversation = await this.getConversation(conversationId);
@@ -336,10 +337,16 @@ export class PostgreSQLMemoryAdapter implements StorageAdapter {
       await client.query(
         `INSERT INTO ${messagesTable} 
          (conversation_id, message_id, user_id, role, parts, metadata, format_version, created_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (conversation_id, message_id) DO UPDATE SET
+           user_id = EXCLUDED.user_id,
+           role = EXCLUDED.role,
+           parts = EXCLUDED.parts,
+           metadata = EXCLUDED.metadata,
+           format_version = EXCLUDED.format_version`,
         [
           conversationId,
-          message.id || this.generateId(),
+          messageId,
           userId,
           message.role,
           safeStringify(message.parts),
@@ -381,13 +388,20 @@ export class PostgreSQLMemoryAdapter implements StorageAdapter {
 
       // Insert all messages
       for (const message of messages) {
+        const messageId = message.id || this.generateId();
         await client.query(
           `INSERT INTO ${messagesTable} 
            (conversation_id, message_id, user_id, role, parts, metadata, format_version, created_at) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (conversation_id, message_id) DO UPDATE SET
+             user_id = EXCLUDED.user_id,
+             role = EXCLUDED.role,
+             parts = EXCLUDED.parts,
+             metadata = EXCLUDED.metadata,
+             format_version = EXCLUDED.format_version`,
           [
             conversationId,
-            message.id || this.generateId(),
+            messageId,
             userId,
             message.role,
             safeStringify(message.parts),
@@ -515,8 +529,9 @@ export class PostgreSQLMemoryAdapter implements StorageAdapter {
       });
 
       // Build query with filters - use SELECT * to handle both old and new schemas safely
-      let sql = `SELECT * FROM ${messagesTable}
-                 WHERE conversation_id = $1 AND user_id = $2`;
+      let sql = `SELECT * FROM (
+             SELECT * FROM ${messagesTable}
+             WHERE conversation_id = $1 AND user_id = $2`;
       const params: any[] = [conversationId, userId];
       let paramCount = 3;
 
@@ -551,11 +566,13 @@ export class PostgreSQLMemoryAdapter implements StorageAdapter {
       }
 
       // Order by creation time and apply limit
-      sql += " ORDER BY created_at ASC";
+      sql += " ORDER BY created_at DESC";
       if (limit && limit > 0) {
         sql += ` LIMIT $${paramCount}`;
         params.push(limit);
       }
+
+      sql += " ) AS subq ORDER BY created_at ASC";
 
       // Debug: Final SQL and parameters
       this.log("Final SQL query:", sql);

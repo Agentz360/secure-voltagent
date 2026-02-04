@@ -12,6 +12,44 @@ interface PendingMessage {
   message: UIMessage;
 }
 
+const extractOpenAIItemId = (metadata: unknown): string => {
+  if (!metadata || typeof metadata !== "object") {
+    return "";
+  }
+
+  const openai = (metadata as { openai?: unknown }).openai;
+  if (!openai || typeof openai !== "object") {
+    return "";
+  }
+
+  const openaiRecord = openai as Record<string, unknown>;
+  const itemId = typeof openaiRecord.itemId === "string" ? openaiRecord.itemId.trim() : "";
+  if (itemId) {
+    return itemId;
+  }
+
+  const traceId =
+    typeof openaiRecord.reasoning_trace_id === "string"
+      ? openaiRecord.reasoning_trace_id.trim()
+      : "";
+  if (traceId) {
+    return traceId;
+  }
+
+  const reasoning = openaiRecord.reasoning;
+  if (reasoning && typeof reasoning === "object") {
+    const reasoningId =
+      typeof (reasoning as Record<string, unknown>).id === "string"
+        ? ((reasoning as Record<string, unknown>).id as string).trim()
+        : "";
+    if (reasoningId) {
+      return reasoningId;
+    }
+  }
+
+  return "";
+};
+
 /**
  * Lightweight buffer that merges tool call/result pairs while keeping VoltAgent's UIMessage format intact.
  */
@@ -106,14 +144,25 @@ export class ConversationBuffer {
     return this.messages.map((message) => this.cloneMessage(message));
   }
 
-  addMetadataToLastAssistantMessage(metadata: Record<string, unknown>): void {
+  addMetadataToLastAssistantMessage(
+    metadata: Record<string, unknown>,
+    options?: { requirePending?: boolean },
+  ): boolean {
     if (!metadata || Object.keys(metadata).length === 0) {
-      return;
+      return false;
     }
 
-    const lastAssistantIndex = this.findLastAssistantIndex();
+    let lastAssistantIndex = this.findLastAssistantIndex({
+      pendingOnly: options?.requirePending,
+    });
     if (lastAssistantIndex === -1) {
-      return;
+      if (options?.requirePending) {
+        return false;
+      }
+      lastAssistantIndex = this.findLastAssistantIndex();
+    }
+    if (lastAssistantIndex === -1) {
+      return false;
     }
 
     const target = this.messages[lastAssistantIndex];
@@ -124,6 +173,7 @@ export class ConversationBuffer {
       ...metadata,
     } as UIMessage["metadata"];
     this.pendingMessageIds.add(target.id);
+    return true;
   }
 
   private appendExistingMessage(
@@ -308,9 +358,12 @@ export class ConversationBuffer {
     }
   }
 
-  private findLastAssistantIndex(): number {
+  private findLastAssistantIndex(options?: { pendingOnly?: boolean }): number {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       if (this.messages[i].role === "assistant") {
+        if (options?.pendingOnly && !this.pendingMessageIds.has(this.messages[i].id)) {
+          continue;
+        }
         return i;
       }
     }
@@ -471,8 +524,13 @@ export class ConversationBuffer {
     switch (part.type) {
       case "text":
         return `text:${part.text}:${JSON.stringify((part as any).providerMetadata ?? null)}`;
-      case "reasoning":
-        return `reasoning:${part.text}`;
+      case "reasoning": {
+        const reasoningText = typeof (part as any).text === "string" ? (part as any).text : "";
+        const reasoningId =
+          typeof (part as any).reasoningId === "string" ? (part as any).reasoningId.trim() : "";
+        const openaiItemId = extractOpenAIItemId((part as any).providerMetadata);
+        return `reasoning:${reasoningText}:${reasoningId}:${openaiItemId}`;
+      }
       case "step-start":
         return "step-start";
       default: {

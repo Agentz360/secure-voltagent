@@ -668,6 +668,71 @@ describe("Agent", () => {
       expect(text).toBe("Streamed response");
     });
 
+    it("pre-creates streaming message ids and forwards them to UI streams", async () => {
+      const agent = new Agent({
+        name: "TestAgent",
+        instructions: "You are a helpful assistant",
+        model: mockModel as any,
+      });
+
+      const mockStream = {
+        text: Promise.resolve("Streamed response"),
+        textStream: (async function* () {
+          yield "Streamed response";
+        })(),
+        fullStream: (async function* () {
+          yield {
+            type: "text-delta" as const,
+            id: "text-1",
+            delta: "Streamed response",
+            text: "Streamed response",
+          };
+        })(),
+        usage: Promise.resolve({
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+        }),
+        finishReason: Promise.resolve("stop"),
+        warnings: [],
+        toUIMessageStream: vi.fn().mockReturnValue((async function* () {})()),
+        toUIMessageStreamResponse: vi.fn(),
+        pipeUIMessageStreamToResponse: vi.fn(),
+        pipeTextStreamToResponse: vi.fn(),
+        toTextStreamResponse: vi.fn(),
+        partialOutputStream: undefined,
+      };
+
+      const memoryManager = agent.getMemoryManager();
+      const saveMessageSpy = vi.spyOn(memoryManager, "saveMessage");
+
+      vi.mocked(ai.streamText).mockReturnValue(mockStream as any);
+
+      const result = await agent.streamText("Stream this", {
+        userId: "user-1",
+        conversationId: "conv-1",
+      });
+
+      const placeholderSaved = saveMessageSpy.mock.calls
+        .map((call) => call[1] as UIMessage)
+        .some((message) => message.role === "assistant" && message.parts.length === 0);
+
+      expect(placeholderSaved).toBe(false);
+
+      result.toUIMessageStream();
+
+      const callArgs = mockStream.toUIMessageStream.mock.calls[0]?.[0];
+      expect(callArgs).toEqual(
+        expect.objectContaining({
+          generateMessageId: expect.any(Function),
+        }),
+      );
+      const generatedId = callArgs?.generateMessageId();
+      expect(typeof generatedId).toBe("string");
+      expect(generatedId).not.toBe("");
+      expect(callArgs?.generateMessageId()).toBe(generatedId);
+    });
+
     it("uses last-step usage for finish events when provider is anthropic", async () => {
       const agent = new Agent({
         name: "TestAgent",

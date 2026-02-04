@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
+  AssistantModelMessage,
   ModelMessage,
   ProviderOptions,
   SystemModelMessage,
   ToolExecutionOptions,
+  ToolModelMessage,
 } from "@ai-sdk/provider-utils";
 import type { Span } from "@opentelemetry/api";
 import { SpanKind, SpanStatusCode, context as otelContext } from "@opentelemetry/api";
@@ -34,6 +36,7 @@ import {
   createTextStreamResponse,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  generateId,
   generateObject,
   generateText,
   pipeTextStreamToResponse,
@@ -41,6 +44,7 @@ import {
   stepCountIs,
   streamObject,
   streamText,
+  validateUIMessages,
 } from "ai";
 import { z } from "zod";
 import { LogEvents, LoggerProxy } from "../logger";
@@ -181,6 +185,7 @@ const QUEUE_CONTEXT_KEY = Symbol("memoryPersistQueue");
 const STEP_PERSIST_COUNT_KEY = Symbol("persistedStepCount");
 const ABORT_LISTENER_ATTACHED_KEY = Symbol("abortListenerAttached");
 const MIDDLEWARE_RETRY_FEEDBACK_KEY = Symbol("middlewareRetryFeedback");
+const STREAM_RESPONSE_MESSAGE_ID_KEY = Symbol("streamResponseMessageId");
 const DEFAULT_FEEDBACK_KEY = "satisfaction";
 const DEFAULT_CONVERSATION_TITLE_PROMPT = [
   "You generate concise titles for new conversations.",
@@ -191,6 +196,83 @@ const DEFAULT_CONVERSATION_TITLE_MAX_OUTPUT_TOKENS = 32;
 const DEFAULT_CONVERSATION_TITLE_MAX_CHARS = 80;
 const CONVERSATION_TITLE_INPUT_MAX_CHARS = 2000;
 const DEFAULT_TOOL_SEARCH_TOP_K = 1;
+
+type ResponseMessage = AssistantModelMessage | ToolModelMessage;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const hasNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+const isAssistantContentPart = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.type) {
+    case "text":
+    case "reasoning":
+      return typeof value.text === "string";
+    case "tool-call":
+    case "tool-result":
+      return hasNonEmptyString(value.toolCallId) && hasNonEmptyString(value.toolName);
+    case "tool-approval-request":
+      return hasNonEmptyString(value.toolCallId) && hasNonEmptyString(value.approvalId);
+    case "image":
+      return "image" in value && value.image != null;
+    case "file":
+      return hasNonEmptyString(value.mediaType) && "data" in value && value.data != null;
+    default:
+      return false;
+  }
+};
+
+const isToolContentPart = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  switch (value.type) {
+    case "tool-result":
+      return hasNonEmptyString(value.toolCallId) && hasNonEmptyString(value.toolName);
+    case "tool-approval-response":
+      return hasNonEmptyString(value.approvalId) && typeof value.approved === "boolean";
+    default:
+      return false;
+  }
+};
+
+const isResponseMessage = (value: unknown): value is ResponseMessage => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (value.role === "assistant") {
+    if (typeof value.content === "string") {
+      return true;
+    }
+    if (Array.isArray(value.content)) {
+      return value.content.every(isAssistantContentPart);
+    }
+    return false;
+  }
+
+  if (value.role === "tool") {
+    return Array.isArray(value.content) && value.content.every(isToolContentPart);
+  }
+
+  return false;
+};
+
+const filterResponseMessages = (messages: unknown): ModelMessage[] | undefined => {
+  if (!Array.isArray(messages)) {
+    return undefined;
+  }
+
+  const filtered = messages.filter(isResponseMessage);
+  return filtered.length > 0 ? filtered : undefined;
+};
 
 const searchToolsParameters = z.object({
   query: z.string().describe("User request or query to search tools for."),
@@ -1020,7 +1102,20 @@ export class Agent {
             }
 
             if (feedbackMetadata) {
-              buffer.addMetadataToLastAssistantMessage({ feedback: feedbackMetadata });
+              const metadataApplied = buffer.addMetadataToLastAssistantMessage(
+                { feedback: feedbackMetadata },
+                { requirePending: true },
+              );
+              if (!metadataApplied) {
+                const responseMessages = filterResponseMessages(result.response?.messages);
+                if (responseMessages?.length) {
+                  buffer.addModelMessages(responseMessages, "response");
+                  buffer.addMetadataToLastAssistantMessage(
+                    { feedback: feedbackMetadata },
+                    { requirePending: true },
+                  );
+                }
+              }
             }
 
             if (shouldDeferPersist) {
@@ -1170,6 +1265,7 @@ export class Agent {
     let feedbackResolved = false;
     let feedbackFinalizeRequested = false;
     let feedbackApplied = false;
+    let latestResponseMessages: ModelMessage[] | undefined;
     const resolveFeedbackDeferred = (value: AgentFeedbackMetadata | null) => {
       if (!feedbackDeferred || feedbackResolved) {
         return;
@@ -1193,7 +1289,17 @@ export class Agent {
           return;
         }
         feedbackApplied = true;
-        buffer.addMetadataToLastAssistantMessage({ feedback: metadata });
+        const metadataApplied = buffer.addMetadataToLastAssistantMessage(
+          { feedback: metadata },
+          { requirePending: true },
+        );
+        if (!metadataApplied && latestResponseMessages?.length) {
+          buffer.addModelMessages(latestResponseMessages, "response");
+          buffer.addMetadataToLastAssistantMessage(
+            { feedback: metadata },
+            { requirePending: true },
+          );
+        }
         if (shouldDeferPersist) {
           void persistQueue.flush(buffer, oc).catch((error) => {
             oc.logger?.debug?.("Failed to persist feedback metadata", { error });
@@ -1358,6 +1464,7 @@ export class Agent {
           | undefined;
         applyForcedToolChoice(aiSDKOptions, forcedToolChoice);
 
+        const responseMessageId = await this.ensureStreamingResponseMessageId(oc, buffer);
         const guardrailStreamingEnabled = guardrailSet.output.length > 0;
 
         let guardrailPipeline: GuardrailPipeline | null = null;
@@ -1518,6 +1625,7 @@ export class Agent {
                 );
               },
               onFinish: async (finalResult) => {
+                latestResponseMessages = filterResponseMessages(finalResult.response?.messages);
                 const providerUsage = finalResult.usage
                   ? await Promise.resolve(finalResult.usage)
                   : undefined;
@@ -1733,6 +1841,17 @@ export class Agent {
           : never;
 
         const agent = this;
+        const applyResponseMessageId = (
+          streamOptions?: ToUIMessageStreamOptions,
+        ): ToUIMessageStreamOptions | undefined => {
+          if (!responseMessageId) {
+            return streamOptions;
+          }
+          return {
+            ...(streamOptions ?? {}),
+            generateMessageId: () => responseMessageId,
+          };
+        };
 
         const createBaseFullStream = (): AsyncIterable<VoltAgentTextStreamPart> => {
           // Wrap the base stream with abort handling
@@ -1909,10 +2028,11 @@ export class Agent {
         const createMergedUIStream = (
           streamOptions?: ToUIMessageStreamOptions,
         ): ToUIMessageStreamReturn => {
+          const resolvedStreamOptions = applyResponseMessageId(streamOptions);
           const mergedStream = createUIMessageStream({
             execute: async ({ writer }) => {
               oc.systemContext.set("uiStreamWriter", writer);
-              writer.merge(getGuardrailAwareUIStream(streamOptions));
+              writer.merge(getGuardrailAwareUIStream(resolvedStreamOptions));
             },
             onError: (error) => String(error),
           });
@@ -1976,9 +2096,10 @@ export class Agent {
         const toUIMessageStreamSanitized = (
           streamOptions?: ToUIMessageStreamOptions,
         ): ToUIMessageStreamReturn => {
+          const resolvedStreamOptions = applyResponseMessageId(streamOptions);
           const baseStream = agent.subAgentManager.hasSubAgents()
-            ? createMergedUIStream(streamOptions)
-            : getGuardrailAwareUIStream(streamOptions);
+            ? createMergedUIStream(resolvedStreamOptions)
+            : getGuardrailAwareUIStream(resolvedStreamOptions);
           return attachFeedbackMetadata(baseStream);
         };
 
@@ -3142,6 +3263,7 @@ export class Agent {
     oc.systemContext.delete(STEP_PERSIST_COUNT_KEY);
     oc.systemContext.delete("conversationSteps");
     oc.systemContext.delete("bailedResult");
+    oc.systemContext.delete(STREAM_RESPONSE_MESSAGE_ID_KEY);
     oc.conversationSteps = [];
     oc.output = undefined;
   }
@@ -3162,6 +3284,27 @@ export class Agent {
       oc.systemContext.set(QUEUE_CONTEXT_KEY, queue);
     }
     return queue;
+  }
+
+  private async ensureStreamingResponseMessageId(
+    oc: OperationContext,
+    buffer: ConversationBuffer,
+  ): Promise<string | null> {
+    const existing = oc.systemContext.get(STREAM_RESPONSE_MESSAGE_ID_KEY);
+    if (typeof existing === "string" && existing.trim().length > 0) {
+      return existing;
+    }
+
+    const messageId = generateId();
+    const placeholder: UIMessage = {
+      id: messageId,
+      role: "assistant",
+      parts: [],
+    };
+
+    buffer.ingestUIMessages([placeholder], false);
+    oc.systemContext.set(STREAM_RESPONSE_MESSAGE_ID_KEY, messageId);
+    return messageId;
   }
 
   private async flushPendingMessagesOnError(oc: OperationContext): Promise<void> {
@@ -3682,10 +3825,11 @@ export class Agent {
     options: BaseGenerationOptions | undefined,
     buffer: ConversationBuffer,
   ): Promise<UIMessage[]> {
+    const resolvedInput = await this.validateIncomingUIMessages(input, oc);
     const messages: UIMessage[] = [];
 
     // Get system message with retriever context and working memory
-    const systemMessage = await this.getSystemMessage(input, oc, options);
+    const systemMessage = await this.getSystemMessage(resolvedInput, oc, options);
     if (systemMessage) {
       const systemMessagesAsUI: UIMessage[] = (() => {
         if (typeof systemMessage === "string") {
@@ -3747,7 +3891,7 @@ export class Agent {
       const useSemanticSearch = options?.semanticMemory?.enabled ?? this.hasSemanticSearchSupport();
 
       // Extract user query for semantic search if enabled
-      const currentQuery = useSemanticSearch ? this.extractUserQuery(input) : undefined;
+      const currentQuery = useSemanticSearch ? this.extractUserQuery(resolvedInput) : undefined;
 
       // Prepare memory read parameters
       const semanticLimit = options?.semanticMemory?.semanticLimit ?? 5;
@@ -3761,7 +3905,7 @@ export class Agent {
         // Create unified memory read span
 
         const spanInput = {
-          query: isSemanticSearch ? currentQuery : input,
+          query: isSemanticSearch ? currentQuery : resolvedInput,
           userId: options?.userId,
           conversationId: options?.conversationId,
         };
@@ -3804,11 +3948,11 @@ export class Agent {
             // Regular memory context
             // Convert model messages to UI for memory context if needed
             const inputForMemory =
-              typeof input === "string"
-                ? input
-                : Array.isArray(input) && (input as any[])[0]?.parts
-                  ? (input as UIMessage[])
-                  : convertModelMessagesToUIMessages(input as BaseMessage[]);
+              typeof resolvedInput === "string"
+                ? resolvedInput
+                : Array.isArray(resolvedInput) && (resolvedInput as any[])[0]?.parts
+                  ? (resolvedInput as UIMessage[])
+                  : convertModelMessagesToUIMessages(resolvedInput as BaseMessage[]);
 
             const result = await this.memoryManager.prepareConversationContext(
               oc,
@@ -3848,11 +3992,11 @@ export class Agent {
           if (isSemanticSearch && oc.userId && oc.conversationId) {
             try {
               const inputForMemory =
-                typeof input === "string"
-                  ? input
-                  : Array.isArray(input) && (input as any[])[0]?.parts
-                    ? (input as UIMessage[])
-                    : convertModelMessagesToUIMessages(input as BaseMessage[]);
+                typeof resolvedInput === "string"
+                  ? resolvedInput
+                  : Array.isArray(resolvedInput) && (resolvedInput as any[])[0]?.parts
+                    ? (resolvedInput as UIMessage[])
+                    : convertModelMessagesToUIMessages(resolvedInput as BaseMessage[]);
               this.memoryManager.queueSaveInput(oc, inputForMemory, oc.userId, oc.conversationId);
             } catch (_e) {
               // Non-fatal: background persistence should not block message preparation
@@ -3868,16 +4012,16 @@ export class Agent {
     }
 
     // Add current input
-    if (typeof input === "string") {
+    if (typeof resolvedInput === "string") {
       messages.push({
         id: randomUUID(),
         role: "user",
-        parts: [{ type: "text", text: input }],
+        parts: [{ type: "text", text: resolvedInput }],
       });
-    } else if (Array.isArray(input)) {
-      const first = (input as any[])[0];
+    } else if (Array.isArray(resolvedInput)) {
+      const first = (resolvedInput as any[])[0];
       if (first && Array.isArray(first.parts)) {
-        const inputMessages = input as UIMessage[];
+        const inputMessages = resolvedInput as UIMessage[];
         const idsToReplace = new Set(
           inputMessages
             .map((message) => message.id)
@@ -3894,7 +4038,7 @@ export class Agent {
 
         messages.push(...inputMessages);
       } else {
-        messages.push(...convertModelMessagesToUIMessages(input as BaseMessage[]));
+        messages.push(...convertModelMessagesToUIMessages(resolvedInput as BaseMessage[]));
       }
     }
 
@@ -3918,10 +4062,32 @@ export class Agent {
         agent: this,
         context: oc,
       });
-      return result?.messages || summarizedMessages;
+      const preparedMessages = result?.messages || summarizedMessages;
+      return await validateUIMessages({ messages: preparedMessages });
     }
 
-    return summarizedMessages;
+    return await validateUIMessages({ messages: summarizedMessages });
+  }
+
+  private async validateIncomingUIMessages(
+    input: string | UIMessage[] | BaseMessage[],
+    oc: OperationContext,
+  ): Promise<string | UIMessage[] | BaseMessage[]> {
+    if (!Array.isArray(input) || input.length === 0) {
+      return input;
+    }
+
+    const first = (input as any[])[0];
+    if (!first || !Array.isArray((first as { parts?: unknown }).parts)) {
+      return input;
+    }
+
+    try {
+      return await validateUIMessages({ messages: input as UIMessage[] });
+    } catch (error) {
+      oc.logger?.error?.("Invalid UI messages", { error });
+      throw error;
+    }
   }
 
   /**
@@ -4622,6 +4788,7 @@ export class Agent {
               statusCode: (error as any)?.statusCode,
               error: safeStringify(error),
             });
+
             await hooks.onRetry?.({
               agent: this,
               context: oc,
@@ -5842,7 +6009,7 @@ export class Agent {
         }
       }
 
-      const responseMessages = event.response?.messages as ModelMessage[] | undefined;
+      const responseMessages = filterResponseMessages(event.response?.messages);
       if (responseMessages && responseMessages.length > 0) {
         buffer.addModelMessages(responseMessages, "response");
       }
