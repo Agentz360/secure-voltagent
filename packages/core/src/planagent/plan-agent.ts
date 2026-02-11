@@ -125,7 +125,13 @@ export type TaskToolOptions = {
 
 export type PlanAgentOptions = Omit<
   AgentOptions,
-  "instructions" | "tools" | "toolkits" | "subAgents" | "supervisorConfig"
+  | "instructions"
+  | "tools"
+  | "toolkits"
+  | "subAgents"
+  | "supervisorConfig"
+  | "workspace"
+  | "workspaceToolkits"
 > & {
   systemPrompt?: InstructionsDynamicValue;
   tools?: (Tool<any, any> | Toolkit | VercelTool)[];
@@ -745,7 +751,9 @@ function createTaskToolkit(options: {
     }),
     execute: async (input, executeOptions) => {
       const operationContext = executeOptions as OperationContext;
-      const toolSpan = operationContext.systemContext.get("parentToolSpan") as Span | undefined;
+      const toolSpan =
+        ((executeOptions as any).parentToolSpan as Span | undefined) ||
+        (operationContext.systemContext.get("parentToolSpan") as Span | undefined);
       if (toolSpan) {
         toolSpan.setAttribute("voltagent.label", `task:${input.subagent_type}`);
         toolSpan.setAttribute("planagent.task.subagent_type", input.subagent_type);
@@ -768,7 +776,7 @@ function createTaskToolkit(options: {
         conversationId: operationContext.conversationId,
         parentOperationContext: operationContext,
         maxSteps: taskOptions?.maxSteps,
-        parentSpan: operationContext.systemContext.get("parentToolSpan") as Span | undefined,
+        parentSpan: toolSpan,
       });
 
       if (toolSpan) {
@@ -1016,8 +1024,12 @@ export class PlanAgent extends Agent {
       onError: [...extensionHooks.map((hook) => hook.onError), hooks?.onError],
     });
 
+    const sanitizedAgentOptions = { ...(agentOptions as AgentOptions) };
+    (sanitizedAgentOptions as Record<string, unknown>).workspace = undefined;
+    (sanitizedAgentOptions as Record<string, unknown>).workspaceToolkits = undefined;
+
     super({
-      ...agentOptions,
+      ...sanitizedAgentOptions,
       name: name || "plan-agent",
       instructions,
       summarization,

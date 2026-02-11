@@ -14,6 +14,7 @@ import type {
   GetConversationStepsOptions,
   GetMessagesOptions,
   StorageAdapter,
+  WorkflowRunQuery,
   WorkflowStateEntry,
   WorkingMemoryScope,
 } from "@voltagent/core";
@@ -577,9 +578,21 @@ END OF MIGRATION SQL
       created_at: step.createdAt ?? new Date().toISOString(),
     }));
 
+    // Supabase/Postgres can error when the same PK appears multiple times in one upsert payload.
+    // Keep the last row for a given id to match existing "last write wins" adapter behavior.
+    const deduplicatedRows = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      deduplicatedRows.set(row.id, row);
+    }
+    const rowsForUpsert = Array.from(deduplicatedRows.values());
+
+    if (rowsForUpsert.length !== rows.length) {
+      this.log("Deduplicated conversation steps before upsert", rows.length - rowsForUpsert.length);
+    }
+
     const { error } = await this.client
       .from(stepsTable)
-      .upsert(rows, { onConflict: "id", ignoreDuplicates: false });
+      .upsert(rowsForUpsert, { onConflict: "id", ignoreDuplicates: false });
 
     if (error) {
       throw new Error(`Failed to save conversation steps: ${error.message}`);
@@ -1309,14 +1322,7 @@ END OF MIGRATION SQL
   /**
    * Query workflow states with optional filters
    */
-  async queryWorkflowRuns(query: {
-    workflowId?: string;
-    status?: WorkflowStateEntry["status"];
-    from?: Date;
-    to?: Date;
-    limit?: number;
-    offset?: number;
-  }): Promise<WorkflowStateEntry[]> {
+  async queryWorkflowRuns(query: WorkflowRunQuery): Promise<WorkflowStateEntry[]> {
     await this.initialize();
 
     const workflowStatesTable = `${this.baseTableName}_workflow_states`;
@@ -1336,6 +1342,14 @@ END OF MIGRATION SQL
 
     if (query.to) {
       queryBuilder = queryBuilder.lte("created_at", query.to.toISOString());
+    }
+
+    if (query.userId) {
+      queryBuilder = queryBuilder.eq("user_id", query.userId);
+    }
+
+    if (query.metadata && Object.keys(query.metadata).length > 0) {
+      queryBuilder = (queryBuilder as any).contains("metadata", query.metadata);
     }
 
     queryBuilder = queryBuilder.order("created_at", { ascending: false });

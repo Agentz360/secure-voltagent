@@ -31,43 +31,54 @@ import {
 /**
  * Workflow list query parameters schema
  */
-const WorkflowListQuerySchema = t.Object({
-  workflowId: t.Optional(t.String({ description: "Filter by workflow ID" })),
-  status: t.Optional(
-    t.Union(
-      [
-        t.Literal("pending"),
-        t.Literal("running"),
-        t.Literal("success"),
-        t.Literal("error"),
-        t.Literal("suspended"),
-        t.Literal("cancelled"),
-      ],
-      { description: "Filter by execution status" },
+const WorkflowListQuerySchema = t.Object(
+  {
+    workflowId: t.Optional(t.String({ description: "Filter by workflow ID" })),
+    status: t.Optional(
+      t.Union(
+        [
+          t.Literal("pending"),
+          t.Literal("running"),
+          t.Literal("success"),
+          t.Literal("completed"),
+          t.Literal("error"),
+          t.Literal("suspended"),
+          t.Literal("cancelled"),
+        ],
+        { description: "Filter by execution status" },
+      ),
     ),
-  ),
-  limit: t.Optional(
-    t.Number({
-      minimum: 1,
-      maximum: 100,
-      description: "Maximum number of executions to return",
-    }),
-  ),
-  offset: t.Optional(t.Number({ minimum: 0, description: "Number of executions to skip" })),
-});
+    from: t.Optional(
+      t.String({ description: "Filter runs created at or after this ISO timestamp" }),
+    ),
+    to: t.Optional(
+      t.String({ description: "Filter runs created at or before this ISO timestamp" }),
+    ),
+    userId: t.Optional(t.String({ description: "Filter by user ID" })),
+    metadata: t.Optional(
+      t.String({
+        description:
+          'Filter by metadata as a JSON object string (e.g. {"tenantId":"acme"}). You can also use query keys prefixed with metadata., such as metadata.tenantId=acme.',
+      }),
+    ),
+    limit: t.Optional(
+      t.Number({
+        minimum: 1,
+        maximum: 100,
+        description: "Maximum number of executions to return",
+      }),
+    ),
+    offset: t.Optional(t.Number({ minimum: 0, description: "Number of executions to skip" })),
+  },
+  // Required for query params like metadata.tenantId=acme (dot-notation metadata filters).
+  { additionalProperties: true },
+);
 
 /**
  * Workflow ID parameter schema
  */
 const WorkflowIdParam = t.Object({
   id: t.String({ description: "Workflow ID" }),
-});
-
-/**
- * Execution ID parameter schema
- */
-const ExecutionIdParam = t.Object({
-  executionId: t.String({ description: "Workflow execution ID" }),
 });
 
 /**
@@ -215,18 +226,25 @@ export function registerWorkflowRoutes(
     },
   );
 
-  // POST /workflows/executions/:executionId/suspend - Suspend workflow execution
+  // POST /workflows/:id/executions/:executionId/suspend - Suspend workflow execution
   app.post(
-    "/workflows/executions/:executionId/suspend",
-    async ({ params, body }) => {
+    "/workflows/:id/executions/:executionId/suspend",
+    async ({ params, body, set }) => {
       const response = await handleSuspendWorkflow(params.executionId, body, deps, logger);
       if (!response.success) {
-        throw new Error("Failed to suspend workflow");
+        const errorMessage = response.error || "";
+        set.status = errorMessage.includes("not found")
+          ? 404
+          : errorMessage.includes("not supported") || errorMessage.includes("suspendable")
+            ? 400
+            : 500;
+        return response;
       }
+      set.status = 200;
       return response;
     },
     {
-      params: ExecutionIdParam,
+      params: WorkflowExecutionParams,
       body: WorkflowSuspendRequestSchema,
       response: {
         200: WorkflowSuspendResponseSchema,
@@ -241,25 +259,25 @@ export function registerWorkflowRoutes(
     },
   );
 
-  // POST /workflows/executions/:executionId/cancel - Cancel workflow execution
+  // POST /workflows/:id/executions/:executionId/cancel - Cancel workflow execution
   app.post(
-    "/workflows/executions/:executionId/cancel",
-    async ({ params, body }) => {
+    "/workflows/:id/executions/:executionId/cancel",
+    async ({ params, body, set }) => {
       const response = await handleCancelWorkflow(params.executionId, body, deps, logger);
       if (!response.success) {
         const errorMessage = response.error || "";
-        if (errorMessage.includes("not found")) {
-          throw new Error("Execution not found");
-        }
-        if (errorMessage.includes("not cancellable")) {
-          throw new Error("Execution is not in a cancellable state");
-        }
-        throw new Error("Failed to cancel workflow");
+        set.status = errorMessage.includes("not found")
+          ? 404
+          : errorMessage.includes("not cancellable")
+            ? 409
+            : 500;
+        return response;
       }
+      set.status = 200;
       return response;
     },
     {
-      params: ExecutionIdParam,
+      params: WorkflowExecutionParams,
       body: WorkflowCancelRequestSchema,
       response: {
         200: WorkflowCancelResponseSchema,

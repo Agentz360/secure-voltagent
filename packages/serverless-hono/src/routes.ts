@@ -37,6 +37,7 @@ import {
   executeTriggerHandler,
   getConversationMessagesHandler,
   getConversationStepsHandler,
+  handleCancelWorkflow,
   handleChatStream,
   handleCheckUpdates,
   handleCloneMemoryConversation,
@@ -49,6 +50,8 @@ import {
   handleGenerateText,
   handleGetAgent,
   handleGetAgentHistory,
+  handleGetAgentWorkspaceInfo,
+  handleGetAgentWorkspaceSkill,
   handleGetAgents,
   handleGetLogs,
   handleGetMemoryConversation,
@@ -57,10 +60,13 @@ import {
   handleGetWorkflowState,
   handleGetWorkflows,
   handleInstallUpdates,
+  handleListAgentWorkspaceFiles,
+  handleListAgentWorkspaceSkills,
   handleListMemoryConversationMessages,
   handleListMemoryConversations,
   handleListTools,
   handleListWorkflowRuns,
+  handleReadAgentWorkspaceFile,
   handleResumeChatStream,
   handleResumeWorkflow,
   handleSaveMemoryMessages,
@@ -382,6 +388,47 @@ export function registerAgentRoutes(app: Hono, deps: ServerProviderDeps, logger:
     const response = await handleGetAgentHistory(agentId, page, limit, deps, logger);
     return c.json(response, response.success ? 200 : 500);
   });
+
+  app.get(AGENT_ROUTES.getWorkspace.path, async (c) => {
+    const agentId = c.req.param("id");
+    const response = await handleGetAgentWorkspaceInfo(agentId, deps, logger);
+    return c.json(response, response.success ? 200 : response.httpStatus || 500);
+  });
+
+  app.get(AGENT_ROUTES.listWorkspaceFiles.path, async (c) => {
+    const agentId = c.req.param("id");
+    const path = c.req.query("path") || undefined;
+    const response = await handleListAgentWorkspaceFiles(agentId, { path }, deps, logger);
+    return c.json(response, response.success ? 200 : response.httpStatus || 500);
+  });
+
+  app.get(AGENT_ROUTES.readWorkspaceFile.path, async (c) => {
+    const agentId = c.req.param("id");
+    const path = c.req.query("path") || undefined;
+    const offset = c.req.query("offset");
+    const limit = c.req.query("limit");
+    const response = await handleReadAgentWorkspaceFile(
+      agentId,
+      { path, offset, limit },
+      deps,
+      logger,
+    );
+    return c.json(response, response.success ? 200 : response.httpStatus || 500);
+  });
+
+  app.get(AGENT_ROUTES.listWorkspaceSkills.path, async (c) => {
+    const agentId = c.req.param("id");
+    const refresh = c.req.query("refresh");
+    const response = await handleListAgentWorkspaceSkills(agentId, { refresh }, deps, logger);
+    return c.json(response, response.success ? 200 : response.httpStatus || 500);
+  });
+
+  app.get(AGENT_ROUTES.getWorkspaceSkill.path, async (c) => {
+    const agentId = c.req.param("id");
+    const skillId = c.req.param("skillId");
+    const response = await handleGetAgentWorkspaceSkill(agentId, skillId, deps, logger);
+    return c.json(response, response.success ? 200 : response.httpStatus || 500);
+  });
 }
 
 export function registerWorkflowRoutes(app: Hono, deps: ServerProviderDeps, logger: Logger) {
@@ -445,7 +492,35 @@ export function registerWorkflowRoutes(app: Hono, deps: ServerProviderDeps, logg
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
     const response = await handleSuspendWorkflow(executionId, body, deps, logger);
-    return c.json(response, response.success ? 200 : 500);
+    if (response.success) {
+      return c.json(response, 200);
+    }
+    const errorMessage = response.error || "";
+    const status = errorMessage.includes("not found")
+      ? 404
+      : errorMessage.includes("not supported") || errorMessage.includes("suspendable")
+        ? 400
+        : 500;
+    return c.json(response, status);
+  });
+
+  app.post(WORKFLOW_ROUTES.cancelWorkflow.path, async (c) => {
+    const executionId = c.req.param("executionId");
+    const body = await readJsonBody(c, logger);
+    if (!body) {
+      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+    }
+    const response = await handleCancelWorkflow(executionId, body, deps, logger);
+    if (response.success) {
+      return c.json(response, 200);
+    }
+    const errorMessage = response.error || "";
+    const status = errorMessage.includes("not found")
+      ? 404
+      : errorMessage.includes("not cancellable")
+        ? 409
+        : 500;
+    return c.json(response, status);
   });
 
   app.post(WORKFLOW_ROUTES.resumeWorkflow.path, async (c) => {

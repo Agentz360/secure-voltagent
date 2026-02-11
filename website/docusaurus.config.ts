@@ -166,7 +166,6 @@ const config: Config = {
     "./plugins/fetch-tweets.js",
     "./plugins/clarity/index.js",
     "./plugins/ahrefs/index.js",
-    "./plugins/new-year-modal/index.js",
     [
       "@docusaurus/plugin-client-redirects",
       {
@@ -465,10 +464,6 @@ const config: Config = {
             from: "/showcase/999-dev-ai-teammate/",
           },
           {
-            to: "/",
-            from: "/pricing/",
-          },
-          {
             to: "/recipes-and-guides/",
             from: "/recipes/",
           },
@@ -663,6 +658,11 @@ const config: Config = {
         {
           to: "/mcp",
           label: "MCP",
+          position: "left",
+        },
+        {
+          to: "/pricing",
+          label: "Pricing",
           position: "left",
         },
       ],

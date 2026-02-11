@@ -1,5 +1,214 @@
 # @voltagent/core
 
+## 2.3.7
+
+### Patch Changes
+
+- [#1040](https://github.com/VoltAgent/voltagent/pull/1040) [`5e54d3b`](https://github.com/VoltAgent/voltagent/commit/5e54d3b54e2823479788617ce0a1bb5211260f9b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add multi-tenant filters to workflow execution listing (`/workflows/executions`)
+
+  You can now filter workflow execution history by `userId` and metadata fields in addition to
+  existing filters (`workflowId`, `status`, `from`, `to`, `limit`, `offset`).
+
+  ### What's New
+  - Added `userId` filter support for workflow run queries.
+  - Added metadata filtering support:
+    - `metadata` as URL-encoded JSON object
+    - `metadata.<key>` query params (for example: `metadata.tenantId=acme`)
+  - Added status aliases for compatibility:
+    - `success` -> `completed`
+    - `pending` -> `running`
+  - Implemented consistently across storage adapters:
+    - In-memory
+    - PostgreSQL
+    - LibSQL
+    - Supabase
+    - Cloudflare D1
+    - Managed Memory (`@voltagent/voltagent-memory`)
+  - Updated server docs and route descriptions to include new filters.
+
+  ### TypeScript Example
+
+  ```ts
+  const params = new URLSearchParams({
+    workflowId: "order-approval",
+    status: "completed",
+    userId: "user-123",
+    "metadata.tenantId": "acme",
+    "metadata.region": "eu",
+    limit: "20",
+    offset: "0",
+  });
+
+  const response = await fetch(`http://localhost:3141/workflows/executions?${params.toString()}`);
+  const data = await response.json();
+  ```
+
+  ### cURL Examples
+
+  ```bash
+  # Filter by workflow + user + metadata key
+  curl "http://localhost:3141/workflows/executions?workflowId=order-approval&userId=user-123&metadata.tenantId=acme&status=completed&limit=20&offset=0"
+  ```
+
+  ```bash
+  # Filter by metadata JSON object (URL-encoded)
+  curl "http://localhost:3141/workflows/executions?metadata=%7B%22tenantId%22%3A%22acme%22%2C%22region%22%3A%22eu%22%7D"
+  ```
+
+## 2.3.6
+
+### Patch Changes
+
+- [#1034](https://github.com/VoltAgent/voltagent/pull/1034) [`b65b342`](https://github.com/VoltAgent/voltagent/commit/b65b342e17804448a6f3cf0c21966dbc02242086) Thanks [@klakpin](https://github.com/klakpin)! - fix(core): resolve race condition with concurrent tool spans
+
+  Fixed a race condition where tools running in parallel would overwrite each other's
+  parentToolSpan in the shared systemContext. The fix passes parentToolSpan through
+  execution options instead of systemContext, ensuring each tool receives its unique
+  span. Backward compatibility is maintained by checking both options and systemContext.
+
+- [#1035](https://github.com/VoltAgent/voltagent/pull/1035) [`e7b301a`](https://github.com/VoltAgent/voltagent/commit/e7b301a7fbb646f2f50c19014b5fbb4004044022) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: forward workspace runtime context to sandbox, search, and skills operations
+
+  ### What's New
+
+  Workspace runtime context is now consistently propagated across workspace toolkits and internals, which enables tenant-aware routing patterns.
+  - `WorkspaceSandboxExecuteOptions` now includes `operationContext`.
+  - `execute_command` now forwards `operationContext` to `workspace.sandbox.execute(...)`.
+  - Search operations now accept/forward filesystem call context in indexing and query flows.
+  - Skills operations now accept/forward context in discovery, indexing, loading, activation, deactivation, search, and file reads.
+  - Skills `rootPaths` resolver now receives `operationContext` for dynamic root resolution.
+
+  ### Multi-tenant workspace example (filesystem + search + skills)
+
+  ```ts
+  import { Agent, NodeFilesystemBackend, Workspace } from "@voltagent/core";
+
+  const workspace = new Workspace({
+    filesystem: {
+      backend: ({ operationContext }) => {
+        const tenantId = String(operationContext?.context.get("tenantId") ?? "default");
+        return new NodeFilesystemBackend({
+          rootDir: `./.workspace/${tenantId}`,
+        });
+      },
+    },
+    search: {
+      autoIndexPaths: [{ path: "/", glob: "**/*.md" }],
+    },
+    skills: {
+      rootPaths: async ({ operationContext }) => {
+        const tenantId = String(operationContext?.context.get("tenantId") ?? "default");
+        return ["/skills/common", `/skills/tenants/${tenantId}`];
+      },
+    },
+  });
+
+  const agent = new Agent({
+    name: "tenant-aware-agent",
+    model,
+    workspace,
+  });
+
+  await agent.generateText("Search tenant docs and use relevant skills", {
+    context: new Map([["tenantId", "acme"]]),
+  });
+  ```
+
+  ### Tenant-aware remote sandbox routing example (E2B/Daytona)
+
+  ```ts
+  import type {
+    WorkspaceSandbox,
+    WorkspaceSandboxExecuteOptions,
+    WorkspaceSandboxResult,
+  } from "@voltagent/core";
+
+  class TenantSandboxRouter implements WorkspaceSandbox {
+    name = "tenant-router";
+    private readonly sandboxes = new Map<string, WorkspaceSandbox>();
+
+    constructor(private readonly factory: (tenantId: string) => WorkspaceSandbox) {}
+
+    async execute(options: WorkspaceSandboxExecuteOptions): Promise<WorkspaceSandboxResult> {
+      const tenantId = String(options.operationContext?.context.get("tenantId") ?? "default");
+
+      let sandbox = this.sandboxes.get(tenantId);
+      if (!sandbox) {
+        sandbox = this.factory(tenantId);
+        this.sandboxes.set(tenantId, sandbox);
+      }
+
+      return sandbox.execute(options);
+    }
+  }
+  ```
+
+  If you call `workspace.sandbox.execute(...)` directly (outside toolkit execution), pass `operationContext` explicitly when you need tenant/account routing.
+
+## 2.3.5
+
+### Patch Changes
+
+- [#1025](https://github.com/VoltAgent/voltagent/pull/1025) [`c783943`](https://github.com/VoltAgent/voltagent/commit/c783943fa165734fcadabbd0c6ce12212b3a5969) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: introduce experimental Workspace support with filesystem, sandbox execution, search indexing, and skill discovery; add global workspace defaults and optional sandbox providers (E2B/Daytona). - #1008
+
+  Example:
+
+  ```ts
+  import { Agent, Workspace, LocalSandbox, NodeFilesystemBackend } from "@voltagent/core";
+
+  const workspace = new Workspace({
+    id: "support-workspace",
+    operationTimeoutMs: 30_000,
+    filesystem: {
+      backend: new NodeFilesystemBackend({
+        rootDir: "./.workspace",
+      }),
+    },
+    sandbox: new LocalSandbox({
+      rootDir: "./.sandbox",
+      isolation: { provider: "detect" },
+      cleanupOnDestroy: true,
+    }),
+    search: {
+      autoIndexPaths: ["/notes", "/tickets"],
+    },
+    skills: {
+      rootPaths: ["/skills"],
+    },
+  });
+
+  const agent = new Agent({
+    name: "support-agent",
+    model,
+    instructions: "Use workspace tools to review tickets and summarize findings.",
+    workspace,
+    workspaceToolkits: {
+      filesystem: {
+        toolPolicies: {
+          tools: { write_file: { needsApproval: true } },
+        },
+      },
+    },
+  });
+
+  const { text } = await agent.generateText(
+    [
+      "Scan /tickets and /notes.",
+      "Use workspace_search to find urgent issues from the last week.",
+      "Summarize the top 3 risks and include file paths as citations.",
+    ].join("\n"),
+    { maxSteps: 40 }
+  );
+  ```
+
+## 2.3.4
+
+### Patch Changes
+
+- [#1020](https://github.com/VoltAgent/voltagent/pull/1020) [`d751955`](https://github.com/VoltAgent/voltagent/commit/d751955a69b2aedb6082a377fc0aa0799e4bf05c) Thanks [@chrisisagile](https://github.com/chrisisagile)! - Drop orphan reasoning parts when tool-only messages are sanitized.
+  Fixes #1019.
+
+- [#1022](https://github.com/VoltAgent/voltagent/pull/1022) [`48d94af`](https://github.com/VoltAgent/voltagent/commit/48d94af243f8fbd37cb92fa3803eb877208ac34c) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: keep streaming message ids consistent with memory by emitting `messageId` on start/start-step chunks and using it for UI stream mapping (leaving text-part ids intact).
+
 ## 2.3.3
 
 ### Patch Changes
