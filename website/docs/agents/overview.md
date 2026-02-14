@@ -142,6 +142,8 @@ const result = await agent.generateText("Summarize this trace", {
 console.log(result.feedback?.url);
 ```
 
+`result.feedback` may also include `provided`, `providedAt`, and `feedbackId` so UI clients can hide feedback controls once submitted.
+
 If the feedback key is already registered, you can pass only `key` and let the stored config populate the token.
 
 ```ts
@@ -149,6 +151,22 @@ const result = await agent.generateText("Quick rating?", {
   feedback: { key: "satisfaction" },
 });
 ```
+
+To persist "already submitted" state across memory reloads, you can use the result helper:
+
+```ts
+const feedbackId = "feedback-id-from-ingestion-response"; // returned by your feedback ingestion API response
+
+if (result.feedback && !result.feedback.isProvided()) {
+  await result.feedback.markFeedbackProvided({
+    feedbackId, // optional
+  });
+}
+```
+
+You can still call `agent.markFeedbackProvided(...)` directly if you prefer explicit control.
+
+These helpers require memory-backed conversations (`userId` and `conversationId`) and are typically called from your backend after feedback ingestion succeeds.
 
 For end-to-end examples (SDK, API, and useChat), see [Feedback](/observability-docs/feedback).
 
@@ -193,6 +211,35 @@ console.log(haiku.output);
 ### Summarization
 
 Summarization inserts a system summary and keeps the last N non-system messages before each model call. Configure it with the `summarization` option on the agent. See [Summarization](./summarization.md) for configuration and storage details.
+
+### Conversation Persistence
+
+VoltAgent persists conversation messages and step records while a run is executing. By default, it uses step-level checkpoints, which is safer for long multi-step tool chains.
+
+```ts
+const agent = new Agent({
+  name: "Assistant",
+  instructions: "Help users reliably.",
+  model: "openai/gpt-4o-mini",
+  conversationPersistence: {
+    mode: "step", // "step" (default) or "finish"
+    debounceMs: 200, // default
+    flushOnToolResult: true, // default
+  },
+});
+```
+
+You can also override this per call:
+
+```ts
+await agent.generateText("Run the workflow", {
+  conversationPersistence: {
+    mode: "finish",
+  },
+});
+```
+
+`mode: "step"` schedules persistence during execution and flushes immediately on tool completion by default. `mode: "finish"` keeps the legacy behavior of persisting only at operation completion.
 
 ### Input Types
 

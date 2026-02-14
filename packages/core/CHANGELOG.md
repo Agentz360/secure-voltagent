@@ -1,5 +1,202 @@
 # @voltagent/core
 
+## 2.4.1
+
+### Patch Changes
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - Fix workspace skill prompt injection and guidance for skill access tools.
+  - Change activated skill prompt injection to include metadata only (`name`, `id`, `description`) instead of embedding full `SKILL.md` instruction bodies.
+  - Clarify workspace skills system prompt so agents use workspace skill tools for skill access and avoid sandbox commands like `execute_command`, `ls /skills`, or `cat /skills/...`.
+
+- [#1067](https://github.com/VoltAgent/voltagent/pull/1067) [`f36545c`](https://github.com/VoltAgent/voltagent/commit/f36545c63727e1ae4e52b991e7080747e2988ccc) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: persist conversation progress incrementally during multi-step runs
+  - Added step-level conversation persistence checkpoints so completed steps are no longer only saved at turn finish.
+  - Tool completion steps (`tool-result` / `tool-error`) now trigger immediate persistence flushes in step mode.
+  - Added configurable agent persistence options:
+    - `conversationPersistence.mode` (`"step"` or `"finish"`)
+    - `conversationPersistence.debounceMs`
+    - `conversationPersistence.flushOnToolResult`
+  - Added global VoltAgent default `agentConversationPersistence` and wiring to registered agents.
+
+- [#1059](https://github.com/VoltAgent/voltagent/pull/1059) [`ec82442`](https://github.com/VoltAgent/voltagent/commit/ec824427858858fa63c8cfeb3b911f943c23ce71) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add persisted feedback-provided markers for message feedback metadata
+  - `AgentFeedbackMetadata` now supports `provided`, `providedAt`, and `feedbackId`.
+  - Added `Agent.isFeedbackProvided(...)` and `Agent.isMessageFeedbackProvided(...)` helpers.
+  - Added `agent.markFeedbackProvided(...)` to persist a feedback-submitted marker on a stored message so feedback UI can stay hidden after memory reloads.
+  - Added `result.feedback.markFeedbackProvided(...)` and `result.feedback.isProvided()` helper methods for SDK usage.
+  - Updated server response schema to include the new feedback metadata fields.
+
+  ```ts
+  const result = await agent.generateText("How was this answer?", {
+    userId: "user-1",
+    conversationId: "conv-1",
+    feedback: true,
+  });
+
+  if (result.feedback && !result.feedback.isProvided()) {
+    // call after your feedback ingestion succeeds
+    await result.feedback.markFeedbackProvided({
+      feedbackId: "fb_123", // optional
+    });
+  }
+  ```
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - Enable workspace skills prompt injection by default when an agent has a workspace with skills configured.
+  - Agents now auto-compose a workspace skills prompt hook by default.
+  - Added `workspaceSkillsPrompt` to `AgentOptions` to customize (`WorkspaceSkillsPromptOptions`), force (`true`), or disable (`false`) prompt injection.
+  - When a custom `hooks.onPrepareMessages` is provided, it now composes with the default workspace skills prompt hook unless `workspaceSkillsPrompt` is explicitly set to `false`.
+  - Updated workspace skills docs and the `examples/with-workspace` sample to document and use the new behavior.
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: improve workspace skill compatibility for third-party `SKILL.md` files that do not declare file allowlists in frontmatter.
+  - Infer `references`, `scripts`, and `assets` allowlists from relative Markdown links in skill instructions when explicit frontmatter arrays are missing.
+  - This enables skills like `microsoft/playwright-cli` (installed via `npx skills add ...`) to read linked reference files through workspace skill tools without manual metadata rewrites.
+
+- [#1066](https://github.com/VoltAgent/voltagent/pull/1066) [`9e5ef29`](https://github.com/VoltAgent/voltagent/commit/9e5ef29adbf8f710ce2a55910e781163c56ed8d2) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: improve `providerOptions` IntelliSense for provider-specific model settings
+  - `ProviderOptions` now includes typed option buckets for `openai`, `anthropic`, `google`, and `xai`.
+  - Existing top-level call option fields (`temperature`, `maxTokens`, `topP`, `frequencyPenalty`, `presencePenalty`, etc.) remain supported for backward compatibility.
+  - Added type-level coverage for provider-scoped options in the agent type tests.
+  - Updated docs to show provider-scoped `providerOptions` usage in agent, API endpoint, and UI integration examples.
+
+  ```ts
+  await agent.generateText("Draft a summary", {
+    temperature: 0.3,
+    providerOptions: {
+      openai: {
+        reasoningEffort: "medium",
+        textVerbosity: "low",
+      },
+      anthropic: {
+        sendReasoning: true,
+      },
+      google: {
+        thinkingConfig: {
+          thinkingBudget: 1024,
+        },
+      },
+      xai: {
+        reasoningEffort: "medium",
+      },
+    },
+  });
+  ```
+
+## 2.4.0
+
+### Minor Changes
+
+- [#1055](https://github.com/VoltAgent/voltagent/pull/1055) [`21891b4`](https://github.com/VoltAgent/voltagent/commit/21891b4574df7c771fb9b12f04402c2ffa1201bd) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add tool-aware live-eval payloads and a deterministic tool-call accuracy scorer
+
+  ### What's New
+  - `@voltagent/core`
+    - Live eval payload now includes `messages`, `toolCalls`, and `toolResults`.
+    - If `toolCalls`/`toolResults` are not explicitly provided, they are derived from the normalized message/step chain.
+    - New exported eval types: `AgentEvalToolCall` and `AgentEvalToolResult`.
+  - `@voltagent/scorers`
+    - Added prebuilt `createToolCallAccuracyScorerCode` for deterministic tool evaluation.
+    - Supports both single-tool checks (`expectedTool`) and ordered tool-chain checks (`expectedToolOrder`).
+    - Supports strict and lenient matching modes.
+
+  ### Code Examples
+
+  Built-in tool-call scorer:
+
+  ```ts
+  import { createToolCallAccuracyScorerCode } from "@voltagent/scorers";
+
+  const toolOrderScorer = createToolCallAccuracyScorerCode({
+    expectedToolOrder: ["searchProducts", "checkInventory"],
+    strictMode: false,
+  });
+  ```
+
+  Custom scorer using `toolCalls` + `toolResults`:
+
+  ```ts
+  import { buildScorer } from "@voltagent/core";
+
+  interface ToolEvalPayload extends Record<string, unknown> {
+    toolCalls?: Array<{ toolName?: string }>;
+    toolResults?: Array<{ isError?: boolean; error?: unknown }>;
+  }
+
+  const toolExecutionHealthScorer = buildScorer<ToolEvalPayload, Record<string, unknown>>({
+    id: "tool-execution-health",
+    label: "Tool Execution Health",
+  })
+    .score(({ payload }) => {
+      const toolCalls = payload.toolCalls ?? [];
+      const toolResults = payload.toolResults ?? [];
+
+      const failedResults = toolResults.filter(
+        (result) => result.isError === true || Boolean(result.error)
+      );
+      const completionRatio =
+        toolCalls.length === 0 ? 1 : Math.min(toolResults.length / toolCalls.length, 1);
+
+      return {
+        score: Math.max(0, completionRatio - failedResults.length * 0.25),
+        metadata: {
+          toolCallCount: toolCalls.length,
+          toolResultCount: toolResults.length,
+          failedResultCount: failedResults.length,
+        },
+      };
+    })
+    .build();
+  ```
+
+- [#1054](https://github.com/VoltAgent/voltagent/pull/1054) [`3556385`](https://github.com/VoltAgent/voltagent/commit/3556385f207de8c669b878ccea8257a421e15c0f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add `onToolError` hook for customizing tool error payloads before serialization
+
+  Example:
+
+  ```ts
+  import { Agent, createHooks } from "@voltagent/core";
+
+  const agent = new Agent({
+    name: "Assistant",
+    instructions: "Use tools when needed.",
+    model: "openai/gpt-4o-mini",
+    hooks: createHooks({
+      onToolError: async ({ originalError, error }) => {
+        const maybeAxios = (originalError as any).isAxiosError === true;
+        if (!maybeAxios) {
+          return;
+        }
+
+        return {
+          output: {
+            error: true,
+            name: error.name,
+            message: originalError.message,
+            code: (originalError as any).code,
+            status: (originalError as any).response?.status,
+          },
+        };
+      },
+    }),
+  });
+  ```
+
+### Patch Changes
+
+- [#1052](https://github.com/VoltAgent/voltagent/pull/1052) [`156c98e`](https://github.com/VoltAgent/voltagent/commit/156c98e738c0e86dc9fc2dc4d55ee48c8e1e2576) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: expose workspace in tool execution context - #1046
+  - Add `workspace?: Workspace` to `OperationContext`, so custom tools can access `options.workspace` during tool calls.
+  - Wire agent operation context creation to attach the configured workspace automatically.
+  - Add regression coverage showing a tool call can read workspace filesystem content and fetch sandbox output in the same execution.
+
+- [#1058](https://github.com/VoltAgent/voltagent/pull/1058) [`480981a`](https://github.com/VoltAgent/voltagent/commit/480981afe136b575d2ba6d943924dddc5e07da44) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: make workspace toolkit schemas compatible with Zod v4 record handling - #1043
+
+  ### What Changed
+  - Updated workspace toolkit input schemas to avoid single-argument `z.record(...)` usage that can fail in Zod v4 JSON schema conversion paths.
+  - `workspace_sandbox.execute_command` now uses `z.record(z.string(), z.string())` for `env`.
+  - `workspace_index_content` now uses `z.record(z.string(), z.unknown())` for `metadata`.
+
+  ### Why
+
+  With `@voltagent/core` + `zod@4`, some workspace toolkit flows could fail at runtime with:
+
+  `Cannot read properties of undefined (reading '_zod')`
+
+  This patch ensures built-in workspace toolkits (such as sandbox and search indexing) work reliably across supported Zod versions.
+
 ## 2.3.8
 
 ### Patch Changes

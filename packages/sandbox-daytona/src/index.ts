@@ -1,9 +1,13 @@
 import * as daytonaModule from "@daytonaio/sdk";
-import type {
-  WorkspaceSandbox,
-  WorkspaceSandboxExecuteOptions,
-  WorkspaceSandboxResult,
+import type { Sandbox as DaytonaOriginalSandbox } from "@daytonaio/sdk";
+import {
+  type WorkspaceSandbox,
+  type WorkspaceSandboxExecuteOptions,
+  type WorkspaceSandboxResult,
+  normalizeCommandAndArgs,
 } from "@voltagent/core";
+
+export type DaytonaSandboxInstance = DaytonaOriginalSandbox;
 
 export type DaytonaSandboxOptions = {
   apiKey?: string;
@@ -25,17 +29,6 @@ type DaytonaExecResult = {
   artifacts?: {
     stdout?: string;
     stderr?: string;
-  };
-};
-
-type DaytonaSandboxInstance = {
-  process: {
-    executeCommand: (
-      command: string,
-      cwd?: string,
-      env?: Record<string, string>,
-      timeoutSeconds?: number,
-    ) => Promise<DaytonaExecResult>;
   };
 };
 
@@ -156,7 +149,7 @@ export class DaytonaSandbox implements WorkspaceSandbox {
     return await client.create(this.createParams, options);
   }
 
-  private async getSandbox(): Promise<DaytonaSandboxInstance> {
+  private async resolveSandbox(): Promise<DaytonaSandboxInstance> {
     if (this.sandbox) {
       return this.sandbox;
     }
@@ -174,9 +167,18 @@ export class DaytonaSandbox implements WorkspaceSandbox {
     return this.sandboxPromise;
   }
 
+  /**
+   * Returns the underlying Daytona SDK sandbox instance.
+   * Use this when you need Daytona-specific APIs beyond `execute`.
+   */
+  async getSandbox(): Promise<DaytonaSandboxInstance> {
+    return this.resolveSandbox();
+  }
+
   async execute(options: WorkspaceSandboxExecuteOptions): Promise<WorkspaceSandboxResult> {
     const startTime = Date.now();
-    const command = options.command?.trim();
+    const normalized = normalizeCommandAndArgs(options.command ?? "", options.args);
+    const command = normalized.command.trim();
 
     if (!command) {
       throw new Error("Sandbox command is required");
@@ -195,7 +197,7 @@ export class DaytonaSandbox implements WorkspaceSandbox {
       };
     }
 
-    const sandbox = await this.getSandbox();
+    const sandbox = await this.resolveSandbox();
     const maxOutputBytes =
       options.maxOutputBytes === undefined
         ? this.maxOutputBytes
@@ -229,7 +231,7 @@ export class DaytonaSandbox implements WorkspaceSandbox {
 
     let response: DaytonaExecResult;
     try {
-      const commandLine = buildCommandLine(command, options.args);
+      const commandLine = buildCommandLine(command, normalized.args);
       response = await sandbox.process.executeCommand(
         commandLine,
         options.cwd ?? this.cwd,

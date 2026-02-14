@@ -1,3 +1,7 @@
+import type { AnthropicProviderOptions } from "@ai-sdk/anthropic";
+import type { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
+import type { OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
+import type { XaiProviderOptions, XaiResponsesProviderOptions } from "@ai-sdk/xai";
 import type { Span } from "@opentelemetry/api";
 import type { z } from "zod";
 import type {
@@ -47,6 +51,7 @@ import type {
   WorkspaceFilesystemToolkitOptions,
   WorkspaceSandboxToolkitOptions,
   WorkspaceSearchToolkitOptions,
+  WorkspaceSkillsPromptOptions,
   WorkspaceSkillsToolkitOptions,
 } from "../workspace";
 import type { ContextInput } from "./agent";
@@ -88,6 +93,32 @@ export type AgentFeedbackMetadata = {
   tokenId?: string;
   expiresAt?: string;
   feedbackConfig?: VoltOpsFeedbackConfig | null;
+  provided?: boolean;
+  providedAt?: string;
+  feedbackId?: string;
+};
+
+export type AgentFeedbackMarkProvidedInput = {
+  userId?: string;
+  conversationId?: string;
+  messageId?: string;
+  providedAt?: Date | string;
+  feedbackId?: string;
+};
+
+export type AgentFeedbackHandle = AgentFeedbackMetadata & {
+  isProvided: () => boolean;
+  markFeedbackProvided: (
+    input?: AgentFeedbackMarkProvidedInput,
+  ) => Promise<AgentFeedbackMetadata | null>;
+};
+
+export type AgentMarkFeedbackProvidedInput = {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  providedAt?: Date | string;
+  feedbackId?: string;
 };
 
 /**
@@ -243,7 +274,7 @@ export type ToolsDynamicValue =
 /**
  * Provider options type for LLM configurations
  */
-export type ProviderOptions = {
+type LegacyProviderCallOptions = {
   // Controls randomness (0-1)
   temperature?: number;
   // Maximum tokens to generate
@@ -269,7 +300,16 @@ export type ProviderOptions = {
 
   // Callback when an error occurs during generation
   onError?: (error: unknown) => Promise<void>;
+};
 
+export type ProviderOptions = LegacyProviderCallOptions & {
+  // Common provider-specific option buckets with IntelliSense
+  anthropic?: AnthropicProviderOptions & Record<string, unknown>;
+  google?: GoogleGenerativeAIProviderOptions & Record<string, unknown>;
+  openai?: OpenAIResponsesProviderOptions & Record<string, unknown>;
+  xai?: (XaiProviderOptions | XaiResponsesProviderOptions) & Record<string, unknown>;
+
+  // Allow other providers / future options without breaking changes
   [key: string]: unknown;
 };
 
@@ -574,6 +614,27 @@ export type AgentSummarizationOptions = {
   model?: AgentModelValue;
 };
 
+export type AgentConversationPersistenceMode = "finish" | "step";
+
+export type AgentConversationPersistenceOptions = {
+  /**
+   * `finish` persists only at operation completion.
+   * `step` checkpoints after each step (debounced) and flushes on tool completion by default.
+   * @default "step"
+   */
+  mode?: AgentConversationPersistenceMode;
+  /**
+   * Debounce duration (ms) for step-level persistence scheduling.
+   * @default 200
+   */
+  debounceMs?: number;
+  /**
+   * When true in `step` mode, tool-result/tool-error steps trigger an immediate flush.
+   * @default true
+   */
+  flushOnToolResult?: boolean;
+};
+
 /**
  * Agent configuration options
  */
@@ -593,8 +654,19 @@ export type AgentOptions = {
   toolRouting?: ToolRoutingConfig | false;
   workspace?: Workspace | WorkspaceConfig | false;
   workspaceToolkits?: WorkspaceToolkitOptions | false;
+  /**
+   * Controls automatic workspace skills prompt injection.
+   *
+   * - `undefined` (default): auto-inject when workspace skills are configured and no custom
+   *   `hooks.onPrepareMessages` is provided.
+   * - `true`: force auto-injection with default prompt options.
+   * - `false`: disable auto-injection.
+   * - object: force auto-injection with custom prompt options.
+   */
+  workspaceSkillsPrompt?: WorkspaceSkillsPromptOptions | boolean;
   memory?: Memory | false;
   summarization?: AgentSummarizationOptions | false;
+  conversationPersistence?: AgentConversationPersistenceOptions;
 
   // Retriever/RAG
   retriever?: BaseRetriever;

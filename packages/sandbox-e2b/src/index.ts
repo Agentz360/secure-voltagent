@@ -3,7 +3,10 @@ import type {
   WorkspaceSandboxExecuteOptions,
   WorkspaceSandboxResult,
 } from "@voltagent/core";
+import type { Sandbox as E2BOriginalSandbox } from "e2b";
 import * as e2bModule from "e2b";
+
+export type E2BSandboxInstance = E2BOriginalSandbox;
 
 export type E2BSandboxOptions = {
   apiKey?: string;
@@ -71,6 +74,105 @@ type E2BModule = {
 const DEFAULT_TIMEOUT_MS = 60000;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 const SAFE_SHELL_ARG = /^[A-Za-z0-9_./:@+=-]+$/;
+
+const tokenizeCommandLine = (value: string): string[] | null => {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escapeNext = false;
+
+  const pushCurrent = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+
+  for (const char of value) {
+    if (escapeNext) {
+      current += char;
+      escapeNext = false;
+      continue;
+    }
+
+    if (quote === null) {
+      if (char === "\\") {
+        escapeNext = true;
+        continue;
+      }
+      if (char === "'" || char === '"') {
+        quote = char;
+        continue;
+      }
+      if (/\s/.test(char)) {
+        pushCurrent();
+        continue;
+      }
+      current += char;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (char === "'") {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      quote = null;
+      continue;
+    }
+
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escapeNext) {
+    current += "\\";
+  }
+
+  if (quote !== null) {
+    return null;
+  }
+
+  pushCurrent();
+  return tokens.length > 0 ? tokens : null;
+};
+
+const normalizeCommandAndArgs = (
+  command: string,
+  args?: string[],
+): { command: string; args?: string[] } => {
+  const trimmedCommand = command.trim();
+  const normalizedArgs = args && args.length > 0 ? args : undefined;
+
+  if (!trimmedCommand) {
+    return { command: trimmedCommand, args: normalizedArgs };
+  }
+
+  if (!/\s/.test(trimmedCommand)) {
+    return { command: trimmedCommand, args: normalizedArgs };
+  }
+
+  const parsed = tokenizeCommandLine(trimmedCommand);
+  if (!parsed || parsed.length === 0) {
+    return { command: trimmedCommand, args: normalizedArgs };
+  }
+
+  const [normalizedCommand, ...parsedArgs] = parsed;
+  const mergedArgs = [...parsedArgs, ...(normalizedArgs ?? [])];
+  return {
+    command: normalizedCommand,
+    args: mergedArgs.length > 0 ? mergedArgs : undefined,
+  };
+};
 
 type OutputBuffer = {
   chunks: Buffer[];
@@ -277,7 +379,7 @@ export class E2BSandbox implements WorkspaceSandbox {
     return await Sandbox.create(createOptions);
   }
 
-  private async getSandbox(): Promise<E2BSdkSandbox> {
+  private async resolveSandbox(): Promise<E2BSdkSandbox> {
     if (this.sandbox) {
       return this.sandbox;
     }
@@ -293,6 +395,14 @@ export class E2BSandbox implements WorkspaceSandbox {
         });
     }
     return this.sandboxPromise;
+  }
+
+  /**
+   * Returns the underlying E2B SDK sandbox instance.
+   * Use this when you need E2B-specific APIs beyond `execute`.
+   */
+  async getSandbox(): Promise<E2BSandboxInstance> {
+    return (await this.resolveSandbox()) as unknown as E2BSandboxInstance;
   }
 
   private async killCommand(sandbox: E2BSdkSandbox, handle?: E2BCommandHandle): Promise<void> {
@@ -330,7 +440,8 @@ export class E2BSandbox implements WorkspaceSandbox {
 
   async execute(options: WorkspaceSandboxExecuteOptions): Promise<WorkspaceSandboxResult> {
     const startTime = Date.now();
-    const command = options.command?.trim();
+    const normalized = normalizeCommandAndArgs(options.command ?? "", options.args);
+    const command = normalized.command.trim();
 
     if (!command) {
       throw new Error("Sandbox command is required");
@@ -373,7 +484,7 @@ export class E2BSandbox implements WorkspaceSandbox {
               timedOut = true;
               resolve(null);
             }, remaining);
-            this.getSandbox()
+            this.resolveSandbox()
               .then((resolved) => {
                 if (settled) {
                   return;
@@ -391,7 +502,7 @@ export class E2BSandbox implements WorkspaceSandbox {
                 reject(error);
               });
           })
-        : await this.getSandbox();
+        : await this.resolveSandbox();
 
     if (!sandbox) {
       return {
@@ -456,7 +567,7 @@ export class E2BSandbox implements WorkspaceSandbox {
     }
 
     const runCommand = async (): Promise<E2BCommandResult> => {
-      const commandLine = buildCommandLine(command, options.args);
+      const commandLine = buildCommandLine(command, normalized.args);
       const runOptions: Record<string, unknown> = {
         onStdout: (data: string) => {
           appendOutput(stdoutBuffer, data, maxOutputBytes);

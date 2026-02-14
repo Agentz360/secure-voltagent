@@ -175,12 +175,17 @@ export type { EmbeddingRouterModelId } from "./registries/embedding-model-router
 export * from "./events/types";
 export type {
   AgentOptions,
+  AgentConversationPersistenceMode,
+  AgentConversationPersistenceOptions,
   AgentSummarizationOptions,
   AgentModelReference,
   AgentModelConfig,
   AgentModelValue,
   AgentFeedbackOptions,
+  AgentFeedbackHandle,
+  AgentFeedbackMarkProvidedInput,
   AgentFeedbackMetadata,
+  AgentMarkFeedbackProvidedInput,
   WorkspaceToolkitOptions,
   AgentResponse,
   AgentFullState,
