@@ -5,7 +5,7 @@ import { createTestAgent } from "../agent/test-utils";
 import { Memory } from "../memory";
 import { InMemoryStorageAdapter } from "../memory/adapters/storage/in-memory";
 import { AgentRegistry } from "../registries/agent-registry";
-import { createWorkflow } from "./core";
+import { VOLTAGENT_RESTART_CHECKPOINT_KEY, createWorkflow } from "./core";
 import { WorkflowRegistry } from "./registry";
 import { andAgent, andThen } from "./steps";
 
@@ -460,6 +460,577 @@ describe.sequential("workflow streaming", () => {
     for (const chunk of parsedChunks) {
       expect(allowedTypes.includes(chunk.type)).toBe(true);
     }
+  });
+});
+
+describe.sequential("workflow.startAsync", () => {
+  beforeEach(() => {
+    const registry = WorkflowRegistry.getInstance();
+    (registry as any).workflows.clear();
+  });
+
+  it("should return immediately and complete in the background", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let releaseStep: (() => void) | undefined;
+    const stepGate = new Promise<void>((resolve) => {
+      releaseStep = resolve;
+    });
+
+    const workflow = createWorkflow(
+      {
+        id: "start-async-background",
+        name: "Start Async Background",
+        input: z.object({ value: z.number() }),
+        result: z.object({ result: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "wait-for-release",
+        execute: async ({ data }) => {
+          await stepGate;
+          return { result: data.value * 2 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const startResult = await workflow.startAsync({ value: 21 });
+
+    expect(startResult).toEqual({
+      executionId: expect.any(String),
+      workflowId: "start-async-background",
+      startAt: expect.any(Date),
+    });
+
+    let runningState = await memory.getWorkflowState(startResult.executionId);
+    for (let i = 0; i < 100 && runningState?.status !== "running"; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      runningState = await memory.getWorkflowState(startResult.executionId);
+    }
+    expect(runningState?.status).toBe("running");
+
+    releaseStep?.();
+
+    let completedState = await memory.getWorkflowState(startResult.executionId);
+    for (let i = 0; i < 100 && completedState?.status !== "completed"; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      completedState = await memory.getWorkflowState(startResult.executionId);
+    }
+
+    expect(completedState?.status).toBe("completed");
+    expect(completedState?.output).toEqual({ result: 42 });
+  });
+
+  it("should persist error state when background execution fails", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "start-async-error",
+        name: "Start Async Error",
+        input: z.object({ value: z.number() }),
+        result: z.object({ result: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "throw-error",
+        execute: async () => {
+          throw new Error("startAsync failure");
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const startResult = await workflow.startAsync({ value: 1 });
+    let erroredState = await memory.getWorkflowState(startResult.executionId);
+
+    for (let i = 0; i < 100 && erroredState?.status !== "error"; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      erroredState = await memory.getWorkflowState(startResult.executionId);
+    }
+
+    expect(erroredState?.status).toBe("error");
+    expect(erroredState?.metadata).toEqual(
+      expect.objectContaining({
+        errorMessage: "startAsync failure",
+      }),
+    );
+  });
+
+  it("should respect executionId passed in options", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "start-async-execution-id",
+        name: "Start Async Execution ID",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "echo",
+        execute: async ({ data }) => data,
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "execution-id-start-async";
+    const startResult = await workflow.startAsync(
+      { value: 5 },
+      {
+        executionId,
+      },
+    );
+
+    expect(startResult.executionId).toBe(executionId);
+
+    let state = await memory.getWorkflowState(executionId);
+    for (let i = 0; i < 100 && state?.status !== "completed"; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      state = await memory.getWorkflowState(executionId);
+    }
+
+    expect(state?.status).toBe("completed");
+    expect(state?.output).toEqual({ value: 5 });
+  });
+
+  it("should reject resumeFrom options to avoid overwriting suspended runs", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "start-async-reject-resume-from",
+        name: "Start Async Reject Resume From",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "echo",
+        execute: async ({ data }) => data,
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "suspended-run";
+    const suspendedAt = new Date();
+    await memory.setWorkflowState(executionId, {
+      id: executionId,
+      workflowId: "start-async-reject-resume-from",
+      workflowName: "Start Async Reject Resume From",
+      status: "suspended",
+      input: { value: 10 },
+      workflowState: { stage: "waiting" },
+      suspension: {
+        suspendedAt,
+        reason: "awaiting-input",
+        stepIndex: 0,
+      },
+      metadata: {
+        marker: "preserve-me",
+      },
+      createdAt: suspendedAt,
+      updatedAt: suspendedAt,
+    });
+
+    await expect(
+      workflow.startAsync(
+        { value: 5 },
+        {
+          resumeFrom: {
+            executionId,
+            resumeStepIndex: 0,
+          },
+        },
+      ),
+    ).rejects.toThrow("startAsync does not support resumeFrom");
+
+    const persisted = await memory.getWorkflowState(executionId);
+    expect(persisted?.status).toBe("suspended");
+    expect(persisted?.metadata).toEqual(
+      expect.objectContaining({
+        marker: "preserve-me",
+      }),
+    );
+  });
+});
+
+describe.sequential("workflow.restart", () => {
+  beforeEach(() => {
+    const registry = WorkflowRegistry.getInstance();
+    (registry as any).workflows.clear();
+  });
+
+  it("should restart an interrupted running execution from checkpoint", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    const executions: string[] = [];
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-interrupted",
+        name: "Restart Interrupted",
+        input: z.object({ value: z.number() }),
+        result: z.object({ total: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "step-1",
+        execute: async ({ data }) => {
+          executions.push("step-1");
+          return { value: data.value + 1 };
+        },
+      }),
+      andThen({
+        id: "step-2",
+        execute: async ({ data, getStepData }) => {
+          executions.push("step-2");
+          const step1Output = getStepData("step-1")?.output as { value?: number } | undefined;
+          return { total: (step1Output?.value ?? data.value) + 10 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "restart-interrupted-exec";
+    const suspendedAt = new Date();
+    await memory.setWorkflowState(executionId, {
+      id: executionId,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      input: { value: 2 },
+      context: [["tenant", "acme"]],
+      workflowState: { plan: "pro" },
+      metadata: {
+        [VOLTAGENT_RESTART_CHECKPOINT_KEY]: {
+          resumeStepIndex: 1,
+          lastCompletedStepIndex: 0,
+          stepExecutionState: { value: 3 },
+          completedStepsData: [{ stepId: "step-1", stepIndex: 0 }],
+          workflowState: { plan: "pro" },
+          stepData: {
+            "step-1": {
+              input: { value: 2 },
+              output: { value: 3 },
+              status: "success",
+              error: null,
+            },
+          },
+          usage: {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+          },
+          eventSequence: 3,
+          checkpointedAt: suspendedAt,
+        },
+      },
+      createdAt: suspendedAt,
+      updatedAt: suspendedAt,
+    });
+
+    const restarted = await workflow.restart(executionId);
+
+    expect(restarted.status).toBe("completed");
+    expect(restarted.result).toEqual({ total: 13 });
+    expect(executions).toEqual(["step-2"]);
+
+    const persisted = await memory.getWorkflowState(executionId);
+    expect(persisted?.status).toBe("completed");
+  });
+
+  it("should fail restart when execution is not running", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-invalid-status",
+        name: "Restart Invalid Status",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "echo",
+        execute: async ({ data }) => data,
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const completed = await workflow.run({ value: 4 });
+    await expect(workflow.restart(completed.executionId)).rejects.toThrow("Execution");
+  });
+
+  it("should restart all active runs and report partial failures", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-bulk",
+        name: "Restart Bulk",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "echo",
+        execute: async ({ data }) => data,
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const now = new Date();
+    await memory.setWorkflowState("restart-bulk-ok", {
+      id: "restart-bulk-ok",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      input: { value: 7 },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await memory.setWorkflowState("restart-bulk-bad", {
+      id: "restart-bulk-bad",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const summary = await workflow.restartAllActive();
+
+    expect(summary.restarted).toContain("restart-bulk-ok");
+    expect(summary.failed.some((failure) => failure.executionId === "restart-bulk-bad")).toBe(true);
+
+    const restartedState = await memory.getWorkflowState("restart-bulk-ok");
+    expect(restartedState?.status).toBe("completed");
+  });
+
+  it("should preserve workflowState, context, usage, and stepData on restart", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let step1Runs = 0;
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-preserve-state",
+        name: "Restart Preserve State",
+        input: z.object({ seed: z.number() }),
+        result: z.object({
+          previous: z.number(),
+          plan: z.string(),
+          role: z.string(),
+          tokens: z.number(),
+        }),
+        memory,
+      },
+      andThen({
+        id: "step-1",
+        execute: async ({ data }) => {
+          step1Runs += 1;
+          return { seed: data.seed + 1 };
+        },
+      }),
+      andThen({
+        id: "step-2",
+        execute: async ({ getStepData, workflowState, state }) => {
+          const previous = (getStepData("step-1")?.output as { seed: number } | undefined)?.seed;
+          return {
+            previous: previous ?? -1,
+            plan: (workflowState.plan as string) ?? "unknown",
+            role: (state.context?.get("role") as string) ?? "missing",
+            tokens: state.usage.totalTokens,
+          };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "restart-preserve-exec";
+    const now = new Date();
+    await memory.setWorkflowState(executionId, {
+      id: executionId,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      input: { seed: 1 },
+      context: [["role", "admin"]],
+      workflowState: { plan: "pro" },
+      metadata: {
+        [VOLTAGENT_RESTART_CHECKPOINT_KEY]: {
+          resumeStepIndex: 1,
+          lastCompletedStepIndex: 0,
+          stepExecutionState: { seed: 2 },
+          completedStepsData: [{ stepId: "step-1", stepIndex: 0 }],
+          workflowState: { plan: "pro" },
+          stepData: {
+            "step-1": {
+              input: { seed: 1 },
+              output: { seed: 2 },
+              status: "success",
+              error: null,
+            },
+          },
+          usage: {
+            promptTokens: 5,
+            completionTokens: 7,
+            totalTokens: 12,
+          },
+          eventSequence: 4,
+          checkpointedAt: now,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const restarted = await workflow.restart(executionId);
+
+    expect(restarted.status).toBe("completed");
+    expect(step1Runs).toBe(0);
+    expect(restarted.result).toEqual({
+      previous: 2,
+      plan: "pro",
+      role: "admin",
+      tokens: 12,
+    });
+    expect(restarted.usage.totalTokens).toBe(12);
+  });
+
+  it("should rehydrate serialized checkpoint step errors on restart", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-error-rehydrate",
+        name: "Restart Error Rehydrate",
+        input: z.object({ value: z.number() }),
+        result: z.object({
+          message: z.string(),
+          hasStack: z.boolean(),
+          name: z.string(),
+        }),
+        memory,
+      },
+      andThen({
+        id: "step-1",
+        execute: async ({ data }) => ({ value: data.value + 1 }),
+      }),
+      andThen({
+        id: "step-2",
+        execute: async ({ getStepData }) => {
+          const stepError = getStepData("step-1")?.error;
+          return {
+            message: stepError instanceof Error ? stepError.message : "missing",
+            hasStack: stepError instanceof Error && Boolean(stepError.stack),
+            name: stepError instanceof Error ? stepError.name : "unknown",
+          };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "restart-error-rehydrate-exec";
+    const now = new Date();
+    await memory.setWorkflowState(executionId, {
+      id: executionId,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      input: { value: 1 },
+      metadata: {
+        [VOLTAGENT_RESTART_CHECKPOINT_KEY]: {
+          resumeStepIndex: 1,
+          lastCompletedStepIndex: 0,
+          stepExecutionState: { value: 2 },
+          completedStepsData: [{ stepId: "step-1", stepIndex: 0 }],
+          stepData: {
+            "step-1": {
+              input: { value: 1 },
+              output: undefined,
+              status: "error",
+              error: {
+                message: "step-1 failed previously",
+                stack: "Error: step-1 failed previously",
+                name: "Error",
+              },
+            },
+          },
+          checkpointedAt: now,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const restarted = await workflow.restart(executionId);
+    expect(restarted.status).toBe("completed");
+    expect(restarted.result).toEqual({
+      message: "step-1 failed previously",
+      hasStack: true,
+      name: "Error",
+    });
+  });
+
+  it("should restart safely when persisted context is not tuple-serialized", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "restart-invalid-context",
+        name: "Restart Invalid Context",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number(), role: z.string() }),
+        memory,
+      },
+      andThen({
+        id: "echo",
+        execute: async ({ data, state }) => ({
+          value: data.value,
+          role: (state.context?.get("role") as string) ?? "missing",
+        }),
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const executionId = "restart-invalid-context-exec";
+    const now = new Date();
+    await memory.setWorkflowState(executionId, {
+      id: executionId,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      input: { value: 9 },
+      context: { role: "admin" } as any,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const restarted = await workflow.restart(executionId);
+    expect(restarted.status).toBe("completed");
+    expect(restarted.result).toEqual({ value: 9, role: "missing" });
   });
 });
 
