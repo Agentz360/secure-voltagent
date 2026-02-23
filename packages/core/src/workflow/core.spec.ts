@@ -7,7 +7,7 @@ import { InMemoryStorageAdapter } from "../memory/adapters/storage/in-memory";
 import { AgentRegistry } from "../registries/agent-registry";
 import { VOLTAGENT_RESTART_CHECKPOINT_KEY, createWorkflow } from "./core";
 import { WorkflowRegistry } from "./registry";
-import { andAgent, andThen } from "./steps";
+import { andAgent, andThen, andWhen } from "./steps";
 
 describe.sequential("workflow.run", () => {
   beforeEach(() => {
@@ -333,6 +333,283 @@ describe.sequential("workflow.run", () => {
       }),
     );
   });
+
+  it("should support bail(result) to complete early with custom output", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let finalStepReached = false;
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-bail",
+        name: "Execution Primitives Bail",
+        input: z.object({ value: z.number() }),
+        result: z.object({ final: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "prepare",
+        execute: async ({ data }) => ({ prepared: data.value + 1 }),
+      }),
+      andThen({
+        id: "bail-step",
+        execute: async ({ bail, getStepResult }) => {
+          const prepared = getStepResult<{ prepared: number }>("prepare");
+          bail({ final: (prepared?.prepared ?? 0) * 10 });
+        },
+      }),
+      andThen({
+        id: "should-not-run",
+        execute: async () => {
+          finalStepReached = true;
+          return { final: -1 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const result = await workflow.run({ value: 2 });
+
+    expect(result.status).toBe("completed");
+    expect(result.result).toEqual({ final: 30 });
+    expect(finalStepReached).toBe(false);
+
+    const persisted = await memory.getWorkflowState(result.executionId);
+    expect(persisted?.status).toBe("completed");
+    expect(persisted?.output).toEqual({ final: 30 });
+  });
+
+  it("should support bail() without result to complete early without output", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let finalStepReached = false;
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-bail-no-result",
+        name: "Execution Primitives Bail No Result",
+        input: z.object({ value: z.number() }),
+        result: z.object({ final: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "prepare",
+        execute: async ({ data }) => ({ prepared: data.value + 1 }),
+      }),
+      andThen({
+        id: "bail-step",
+        execute: async ({ bail }) => {
+          bail();
+        },
+      }),
+      andThen({
+        id: "should-not-run",
+        execute: async () => {
+          finalStepReached = true;
+          return { final: -1 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const result = await workflow.run({ value: 2 });
+
+    expect(result.status).toBe("completed");
+    expect(result.result).toBeNull();
+    expect(finalStepReached).toBe(false);
+
+    const persisted = await memory.getWorkflowState(result.executionId);
+    expect(persisted?.status).toBe("completed");
+    expect(persisted?.output).toBeNull();
+  });
+
+  it("should support abort() to cancel execution and persist cancellation metadata", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let finalStepReached = false;
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-abort",
+        name: "Execution Primitives Abort",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "abort-step",
+        execute: async ({ abort }) => {
+          abort();
+        },
+      }),
+      andThen({
+        id: "should-not-run",
+        execute: async () => {
+          finalStepReached = true;
+          return { value: -1 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const result = await workflow.run({ value: 1 });
+
+    expect(result.status).toBe("cancelled");
+    expect(result.result).toBeNull();
+    expect(result.cancellation?.reason).toBe("Workflow aborted by step: abort-step");
+    expect(finalStepReached).toBe(false);
+
+    const persisted = await memory.getWorkflowState(result.executionId);
+    expect(persisted?.status).toBe("cancelled");
+    expect(persisted?.metadata).toEqual(
+      expect.objectContaining({
+        cancellationReason: "Workflow aborted by step: abort-step",
+      }),
+    );
+  });
+
+  it("should provide getStepResult and getInitData helpers in step context", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-step-result-init",
+        name: "Execution Primitives Step Result Init",
+        input: z.object({ value: z.number() }),
+        result: z.object({
+          computed: z.number(),
+          unknownIsNull: z.boolean(),
+          initValue: z.number(),
+        }),
+        memory,
+      },
+      andThen({
+        id: "step-1",
+        execute: async ({ data }) => ({ stepValue: data.value + 1 }),
+      }),
+      andThen({
+        id: "step-2",
+        execute: async ({ getStepResult, getInitData }) => {
+          const prior = getStepResult<{ stepValue: number }>("step-1");
+          const unknown = getStepResult("missing-step");
+          const init = getInitData<{ value: number }>();
+
+          return {
+            computed: (prior?.stepValue ?? 0) + init.value,
+            unknownIsNull: unknown === null,
+            initValue: init.value,
+          };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const result = await workflow.run({ value: 5 });
+
+    expect(result.status).toBe("completed");
+    expect(result.result).toEqual({
+      computed: 11,
+      unknownIsNull: true,
+      initValue: 5,
+    });
+  });
+
+  it("should keep getInitData stable across suspend/resume", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-init-resume",
+        name: "Execution Primitives Init Resume",
+        input: z.object({ requestId: z.string() }),
+        result: z.object({ requestId: z.string(), approved: z.boolean() }),
+        memory,
+      },
+      andThen({
+        id: "approval-gate",
+        resumeSchema: z.object({ approved: z.boolean() }),
+        execute: async ({ data, suspend, resumeData }) => {
+          if (resumeData) {
+            return {
+              ...data,
+              approved: resumeData.approved,
+            };
+          }
+
+          await suspend("Manual approval required");
+        },
+      }),
+      andThen({
+        id: "finalize",
+        execute: async ({ data, getInitData }) => {
+          const init = getInitData<{ requestId: string }>();
+          return {
+            requestId: init.requestId,
+            approved: (data as { approved?: boolean }).approved === true,
+          };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const suspended = await workflow.run({ requestId: "req-42" });
+    expect(suspended.status).toBe("suspended");
+
+    const resumed = await suspended.resume({ approved: true });
+    expect(resumed.status).toBe("completed");
+    expect(resumed.result).toEqual({
+      requestId: "req-42",
+      approved: true,
+    });
+  });
+
+  it("should allow bail from nested steps", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    let finalStepReached = false;
+
+    const workflow = createWorkflow(
+      {
+        id: "execution-primitives-nested-bail",
+        name: "Execution Primitives Nested Bail",
+        input: z.object({ value: z.number() }),
+        result: z.object({ value: z.number() }),
+        memory,
+      },
+      andWhen({
+        id: "conditional-bail",
+        condition: async () => true,
+        step: andThen({
+          id: "inner-bail",
+          execute: async ({ bail }) => {
+            bail({ value: 99 });
+          },
+        }),
+      }),
+      andThen({
+        id: "should-not-run",
+        execute: async () => {
+          finalStepReached = true;
+          return { value: -1 };
+        },
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const result = await workflow.run({ value: 1 });
+
+    expect(result.status).toBe("completed");
+    expect(result.result).toEqual({ value: 99 });
+    expect(finalStepReached).toBe(false);
+  });
 });
 
 describe.sequential("workflow streaming", () => {
@@ -380,6 +657,97 @@ describe.sequential("workflow streaming", () => {
     // Get the final result
     const result = await stream.result;
     expect(result).toEqual({ result: 10 });
+  });
+
+  it("should expose watch/watchAsync and streamLegacy on workflow stream results", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    const workflow = createWorkflow(
+      {
+        id: "stream-observer-surface",
+        name: "Stream Observer Surface",
+        input: z.object({ value: z.number() }),
+        result: z.object({ result: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "multiply",
+        execute: async ({ data }) => ({ result: data.value * 3 }),
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const stream = workflow.stream({ value: 7 });
+    const watchedEvents: string[] = [];
+    const watchedAsyncEvents: string[] = [];
+
+    const unsubscribe = stream.watch((event) => {
+      watchedEvents.push(event.type);
+    });
+    const unsubscribeAsync = await stream.watchAsync((event) => {
+      watchedAsyncEvents.push(event.type);
+    });
+
+    for await (const _event of stream) {
+      // Drain the iterator to completion.
+    }
+
+    unsubscribe();
+    unsubscribeAsync();
+
+    expect(watchedEvents.length).toBeGreaterThan(0);
+    expect(watchedAsyncEvents.length).toBeGreaterThan(0);
+    expect(watchedEvents).toContain("workflow-start");
+    expect(watchedEvents).toContain("workflow-complete");
+    expect(watchedAsyncEvents).toContain("workflow-start");
+    expect(watchedAsyncEvents).toContain("workflow-complete");
+
+    const legacyState = await stream.streamLegacy().getWorkflowState();
+    expect(legacyState).toEqual(
+      expect.objectContaining({
+        id: stream.executionId,
+        status: "completed",
+      }),
+    );
+  });
+
+  it("should expose observeStream as readable stream on workflow stream results", async () => {
+    const memory = new Memory({ storage: new InMemoryStorageAdapter() });
+    const workflow = createWorkflow(
+      {
+        id: "stream-observe-readable",
+        name: "Stream Observe Readable",
+        input: z.object({ value: z.number() }),
+        result: z.object({ result: z.number() }),
+        memory,
+      },
+      andThen({
+        id: "multiply",
+        execute: async ({ data }) => ({ result: data.value * 2 }),
+      }),
+    );
+
+    const registry = WorkflowRegistry.getInstance();
+    registry.registerWorkflow(workflow);
+
+    const stream = workflow.stream({ value: 4 });
+    const reader = stream.observeStream().getReader();
+    const observedTypes: string[] = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value) {
+        observedTypes.push(value.type);
+      }
+    }
+
+    expect(observedTypes).toContain("workflow-start");
+    expect(observedTypes).toContain("workflow-complete");
+    expect(await stream.result).toEqual({ result: 8 });
   });
 
   it("should have usage with default values", async () => {

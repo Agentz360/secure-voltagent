@@ -433,6 +433,60 @@ This allows the agent to maintain a persistent, contextual conversation with eac
 // used by the agent's memory to provide context-aware responses.
 ```
 
+### Execution Primitives in Step Context
+
+Each workflow step now has control/introspection helpers for early exits and history lookups:
+
+- `bail(result?)`: Complete the workflow immediately with a final result
+- `abort()`: Cancel the workflow immediately
+- `getStepResult(stepId)`: Read a previous step's output (or `null`)
+- `getInitData()`: Read the original workflow input, even after resume
+
+```typescript
+import { createWorkflowChain } from "@voltagent/core";
+import { z } from "zod";
+
+const workflow = createWorkflowChain({
+  id: "execution-primitives-demo",
+  name: "Execution Primitives Demo",
+  input: z.object({ userId: z.string(), amount: z.number() }),
+  result: z.object({
+    status: z.enum(["approved", "rejected", "cancelled"]),
+    userId: z.string(),
+  }),
+})
+  .andThen({
+    id: "risk-check",
+    execute: async ({ data }) => ({
+      score: data.amount > 1000 ? 95 : 20,
+      userId: data.userId,
+    }),
+  })
+  .andThen({
+    id: "decision",
+    execute: async ({ getStepResult, getInitData, bail, abort }) => {
+      const risk = getStepResult<{ score: number; userId: string }>("risk-check");
+      const init = getInitData();
+
+      if (!risk) {
+        abort(); // terminal status: cancelled
+      }
+
+      if (risk.score >= 90) {
+        bail({
+          status: "rejected",
+          userId: init.userId,
+        }); // terminal status: completed
+      }
+
+      return {
+        status: "approved",
+        userId: init.userId,
+      };
+    },
+  });
+```
+
 ### Workflow Retry Policies
 
 Set a workflow-wide default retry policy with `retryConfig`. Steps inherit it unless they define `retries` (use `retries: 0` to opt out). `delayMs` waits between retry attempts.
@@ -608,6 +662,53 @@ You can call these APIs directly on a `WorkflowChain` too:
 These are equivalent to `workflow.toWorkflow().restart(...)` and `workflow.toWorkflow().restartAllActive()`.
 
 For cross-workflow recovery, use `WorkflowRegistry.getInstance().restartAllActiveWorkflowRuns()`.
+
+### Time Travel (Deterministic Replay)
+
+Use time travel when you need to replay a historical execution from a specific step for debugging or operational recovery.
+
+Unlike `restart()`, time travel creates a new execution ID and keeps the original run immutable.
+
+```typescript
+const runnableWorkflow = workflow.toWorkflow();
+
+const original = await runnableWorkflow.run({ value: 1 });
+
+const replay = await runnableWorkflow.timeTravel({
+  executionId: original.executionId,
+  stepId: "step-2",
+  // Optional overrides:
+  // inputData: { value: 100 },
+  // resumeData: { approved: true },
+  // workflowStateOverride: { replayReason: "manual-debug" },
+});
+
+console.log(replay.executionId); // New replay execution ID
+console.log(replay.result); // Final replay output
+
+const replayState = await runnableWorkflow.memory.getWorkflowState(replay.executionId);
+console.log(replayState?.replayedFromExecutionId); // original.executionId
+console.log(replayState?.replayFromStepId); // "step-2"
+```
+
+`WorkflowChain` exposes the same APIs:
+
+```typescript
+await workflow.timeTravel({
+  executionId: original.executionId,
+  stepId: "step-2",
+});
+
+const replayStream = workflow.timeTravelStream({
+  executionId: original.executionId,
+  stepId: "step-2",
+});
+```
+
+Notes:
+
+- Time travel only works for non-running executions.
+- If the source execution is still `running`, use `restart(...)` for crash recovery or wait until it reaches a terminal status.
 
 ### Executing Workflows via REST API
 

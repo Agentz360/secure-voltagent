@@ -204,6 +204,26 @@ export interface WorkflowStreamResult<
    * Abort the workflow execution
    */
   abort: () => void;
+  /**
+   * Subscribe to run-level stream events without consuming the main async iterator.
+   * Returns an unsubscribe function.
+   */
+  watch: (cb: (event: WorkflowStreamEvent) => void | Promise<void>) => () => void;
+  /**
+   * Async variant of watch() for compatibility with observer-based integrations.
+   */
+  watchAsync: (cb: (event: WorkflowStreamEvent) => void | Promise<void>) => Promise<() => void>;
+  /**
+   * Create a ReadableStream view over workflow events.
+   */
+  observeStream: () => ReadableStream<WorkflowStreamEvent>;
+  /**
+   * Compatibility surface for legacy stream consumers.
+   */
+  streamLegacy: () => {
+    stream: ReadableStream<WorkflowStreamEvent>;
+    getWorkflowState: () => ReturnType<Memory["getWorkflowState"]>;
+  };
 }
 
 /**
@@ -222,6 +242,34 @@ export interface WorkflowStartAsyncResult {
    * When the async execution was started
    */
   startAt: Date;
+}
+
+export interface WorkflowTimeTravelOptions {
+  /**
+   * Source execution ID to replay from
+   */
+  executionId: string;
+  /**
+   * Step ID to restart execution from
+   */
+  stepId: string;
+  /**
+   * Optional override for the selected step input/state data
+   */
+  inputData?: DangerouslyAllowAny;
+  /**
+   * Optional resume payload passed as `resumeData` to the selected step
+   */
+  resumeData?: DangerouslyAllowAny;
+  /**
+   * Optional override for shared workflow state during replay
+   */
+  workflowStateOverride?: WorkflowStateStore;
+  /**
+   * Optional memory adapter to read source execution and persist replay execution state.
+   * Falls back to workflow default memory when omitted.
+   */
+  memory?: Memory;
 }
 
 export interface WorkflowRetryConfig {
@@ -287,6 +335,11 @@ export interface WorkflowRunOptions {
    * Options for resuming a suspended workflow
    */
   resumeFrom?: WorkflowResumeOptions;
+  /**
+   * Internal replay lineage context for deterministic time-travel executions
+   * @internal
+   */
+  replayFrom?: WorkflowReplayOptions;
   /**
    * Suspension mode:
    * - 'graceful': Wait for current step to complete before suspending (default)
@@ -359,6 +412,17 @@ export interface WorkflowResumeOptions {
    * Data to pass to the resumed step (validated against resumeSchema)
    */
   resumeData?: DangerouslyAllowAny;
+}
+
+export interface WorkflowReplayOptions {
+  /**
+   * Source execution ID used for replay lineage
+   */
+  executionId: string;
+  /**
+   * Source step ID where replay starts
+   */
+  stepId: string;
 }
 
 export interface WorkflowRestartCheckpoint {
@@ -733,6 +797,20 @@ export type Workflow<
     input: WorkflowInput<INPUT_SCHEMA>,
     options?: WorkflowRunOptions,
   ) => Promise<WorkflowStartAsyncResult>;
+  /**
+   * Replay an existing execution from a selected historical step.
+   * A new execution ID is created and linked to the source run for audit safety.
+   */
+  timeTravel: (
+    options: WorkflowTimeTravelOptions,
+  ) => Promise<WorkflowExecutionResult<RESULT_SCHEMA, RESUME_SCHEMA>>;
+  /**
+   * Stream replay execution from a selected historical step.
+   * A new execution ID is created and linked to the source run for audit safety.
+   */
+  timeTravelStream: (
+    options: WorkflowTimeTravelOptions,
+  ) => WorkflowStreamResult<RESULT_SCHEMA, RESUME_SCHEMA>;
   /**
    * Restart an interrupted execution from persisted checkpoint state
    * @param executionId - Execution ID to restart
